@@ -16,6 +16,8 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.Consumer;
+
 import java.util.Collection;
 import java.util.Map;
 
@@ -27,8 +29,18 @@ public interface ShortcutRepository {
 
     /**
      * Checks whether there is any stored history.
+     *
+     * @param consumer Consumer that the result will be passed to.
+     *        The value passed to the consumer will always be non-null.
+     *        The consumer will be called on an unspecified thread, and will always
+     *        get called eventually.
      */
-    boolean hasHistory();
+    void hasHistory(Consumer<Boolean> consumer);
+
+    /**
+     * Removes a single suggestion from the stored history.
+     */
+    void removeFromHistory(SuggestionCursor suggestions, int position);
 
     /**
      * Clears all shortcut history.
@@ -51,9 +63,17 @@ public interface ShortcutRepository {
      *
      * @param query The query. May be empty.
      * @param allowedCorpora The corpora to get shortcuts for.
-     * @return A cursor containing shortcutted results for the query.
+     * @param allowWebSearchShortcuts Whether to include web search shortcuts.
+     * @param consumer Consumer that the shortcuts cursor will be passed to.
+     *        The shortcut cursor passed to the consumer may be null if there are no shortcuts.
+     *        If non-null, and the consumer returns {@code true}, the consumer must ensure that
+     *        the shortcut cursor will get closed eventually.
+     *        The consumer will be called on an unspecified thread, and will always
+     *        get called eventually.
      */
-    ShortcutCursor getShortcutsForQuery(String query, Collection<Corpus> allowedCorpora);
+    void getShortcutsForQuery(String query, Collection<Corpus> allowedCorpora,
+            boolean allowWebSearchShortcuts,
+            Consumer<ShortcutCursor> consumer);
 
     /**
      * Updates a shortcut in the repository after it's been refreshed.
@@ -65,8 +85,14 @@ public interface ShortcutRepository {
     void updateShortcut(Source source, String shortcutId, SuggestionCursor refreshed);
 
     /**
-     * @return A map for corpus name to score. A higher score means that the corpus
-     *         is more important.
+     * Gets scores for all corpora in the click log.
+     *
+     * @param consumer Consumer that the result will be passed to.
+     *        The result is a map of corpus name to score. A higher score means that the corpus
+     *        is more important.
+     *        The value passed to the consumer may be non-null.
+     *        The consumer will be called on an unspecified thread, and will always
+     *        get called eventually.
      */
-    Map<String,Integer> getCorpusScores();
+    void getCorpusScores(Consumer<Map<String,Integer>> consumer);
 }

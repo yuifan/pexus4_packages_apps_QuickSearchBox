@@ -18,19 +18,20 @@ package com.android.quicksearchbox;
 
 import com.android.quicksearchbox.google.GoogleSource;
 import com.android.quicksearchbox.google.GoogleSuggestClient;
-import com.android.quicksearchbox.ui.CorpusViewFactory;
-import com.android.quicksearchbox.ui.CorpusViewInflater;
-import com.android.quicksearchbox.ui.DelayingSuggestionsAdapter;
+import com.android.quicksearchbox.google.SearchBaseUrlHelper;
+import com.android.quicksearchbox.preferences.PreferenceControllerFactory;
+import com.android.quicksearchbox.ui.DefaultSuggestionViewFactory;
 import com.android.quicksearchbox.ui.SuggestionViewFactory;
-import com.android.quicksearchbox.ui.SuggestionViewInflater;
-import com.android.quicksearchbox.ui.SuggestionsAdapter;
 import com.android.quicksearchbox.util.Factory;
+import com.android.quicksearchbox.util.HttpHelper;
+import com.android.quicksearchbox.util.JavaNetHttpHelper;
 import com.android.quicksearchbox.util.NamedTaskExecutor;
 import com.android.quicksearchbox.util.PerNameExecutor;
 import com.android.quicksearchbox.util.PriorityThreadFactory;
 import com.android.quicksearchbox.util.SingleThreadNamedTaskExecutor;
-import com.google.common.util.concurrent.NamingThreadFactory;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 
+import android.app.Activity;
 import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
@@ -38,18 +39,20 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.Process;
+import android.view.ContextThemeWrapper;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 
 public class QsbApplication {
-
     private final Context mContext;
 
     private int mVersionCode;
     private Handler mUiThreadHandler;
     private Config mConfig;
+    private SearchSettings mSettings;
+    private Sources mSources;
     private Corpora mCorpora;
     private CorpusRanker mCorpusRanker;
     private ShortcutRepository mShortcutRepository;
@@ -58,19 +61,26 @@ public class QsbApplication {
     private ThreadFactory mQueryThreadFactory;
     private SuggestionsProvider mSuggestionsProvider;
     private SuggestionViewFactory mSuggestionViewFactory;
-    private CorpusViewFactory mCorpusViewFactory;
     private GoogleSource mGoogleSource;
     private VoiceSearch mVoiceSearch;
     private Logger mLogger;
     private SuggestionFormatter mSuggestionFormatter;
     private TextAppearanceFactory mTextAppearanceFactory;
+    private NamedTaskExecutor mIconLoaderExecutor;
+    private HttpHelper mHttpHelper;
+    private SearchBaseUrlHelper mSearchBaseUrlHelper;
 
     public QsbApplication(Context context) {
-        mContext = context;
+        // the application context does not use the theme from the <application> tag
+        mContext = new ContextThemeWrapper(context, R.style.Theme_QuickSearchBox);
     }
 
     public static boolean isFroyoOrLater() {
         return Build.VERSION.SDK_INT >= Build.VERSION_CODES.FROYO;
+    }
+
+    public static boolean isHoneycombOrLater() {
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.HONEYCOMB;
     }
 
     public static QsbApplication get(Context context) {
@@ -134,6 +144,19 @@ public class QsbApplication {
         getMainThreadHandler().post(action);
     }
 
+    public synchronized NamedTaskExecutor getIconLoaderExecutor() {
+        if (mIconLoaderExecutor == null) {
+            mIconLoaderExecutor = createIconLoaderExecutor();
+        }
+        return mIconLoaderExecutor;
+    }
+
+    protected NamedTaskExecutor createIconLoaderExecutor() {
+        ThreadFactory iconThreadFactory = new PriorityThreadFactory(
+                    Process.THREAD_PRIORITY_BACKGROUND);
+        return new PerNameExecutor(SingleThreadNamedTaskExecutor.factory(iconThreadFactory));
+    }
+
     /**
      * Indicates that construction of the QSB UI is now complete.
      */
@@ -155,20 +178,33 @@ public class QsbApplication {
         return new Config(getContext());
     }
 
+    public synchronized SearchSettings getSettings() {
+        if (mSettings == null) {
+            mSettings = createSettings();
+            mSettings.upgradeSettingsIfNeeded();
+        }
+        return mSettings;
+    }
+
+    protected SearchSettings createSettings() {
+        return new SearchSettingsImpl(getContext(), getConfig());
+    }
+
     /**
-     * Gets the corpora.
+     * Gets all corpora.
+     *
      * May only be called from the main thread.
      */
     public Corpora getCorpora() {
         checkThread();
         if (mCorpora == null) {
-            mCorpora = createCorpora();
+            mCorpora = createCorpora(getSources());
         }
         return mCorpora;
     }
 
-    protected Corpora createCorpora() {
-        SearchableCorpora corpora = new SearchableCorpora(getContext(), createSources(),
+    protected Corpora createCorpora(Sources sources) {
+        SearchableCorpora corpora = new SearchableCorpora(getContext(), getSettings(), sources,
                 createCorpusFactory());
         corpora.update();
         return corpora;
@@ -185,13 +221,22 @@ public class QsbApplication {
         }
     }
 
+    protected Sources getSources() {
+        checkThread();
+        if (mSources == null) {
+            mSources = createSources();
+        }
+        return mSources;
+    }
+
     protected Sources createSources() {
-        return new SearchableSources(getContext());
+        return new SearchableSources(getContext(), getMainThreadHandler(),
+                getIconLoaderExecutor(), getConfig());
     }
 
     protected CorpusFactory createCorpusFactory() {
         int numWebCorpusThreads = getConfig().getNumWebCorpusThreads();
-        return new SearchableCorpusFactory(getContext(), getConfig(),
+        return new SearchableCorpusFactory(getContext(), getConfig(), getSettings(),
                 createExecutorFactory(numWebCorpusThreads));
     }
 
@@ -233,8 +278,12 @@ public class QsbApplication {
     }
 
     protected ShortcutRepository createShortcutRepository() {
-        ThreadFactory logThreadFactory = new NamingThreadFactory("ShortcutRepositoryWriter #%d",
-                new PriorityThreadFactory(Process.THREAD_PRIORITY_BACKGROUND));
+        ThreadFactory logThreadFactory =
+                new ThreadFactoryBuilder()
+                .setNameFormat("ShortcutRepository #%d")
+                .setThreadFactory(new PriorityThreadFactory(
+                        Process.THREAD_PRIORITY_BACKGROUND))
+                .build();
         Executor logExecutor = Executors.newSingleThreadExecutor(logThreadFactory);
         return ShortcutRepositoryImplLog.create(getContext(), getConfig(), getCorpora(),
             getShortcutRefresher(), getMainThreadHandler(), logExecutor);
@@ -289,12 +338,15 @@ public class QsbApplication {
     protected ThreadFactory createQueryThreadFactory() {
         String nameFormat = "QSB #%d";
         int priority = getConfig().getQueryThreadPriority();
-        return new NamingThreadFactory(nameFormat,
-                new PriorityThreadFactory(priority));
+        return new ThreadFactoryBuilder()
+                .setNameFormat(nameFormat)
+                .setThreadFactory(new PriorityThreadFactory(priority))
+                .build();
     }
 
     /**
      * Gets the suggestion provider.
+     *
      * May only be called from the main thread.
      */
     protected SuggestionsProvider getSuggestionsProvider() {
@@ -306,28 +358,14 @@ public class QsbApplication {
     }
 
     protected SuggestionsProvider createSuggestionsProvider() {
-        int maxShortcutsPerWebSource = getConfig().getMaxShortcutsPerWebSource();
-        int maxShortcutsPerNonWebSource = getConfig().getMaxShortcutsPerNonWebSource();
-        Promoter allPromoter = new ShortcutLimitingPromoter(
-                maxShortcutsPerWebSource,
-                maxShortcutsPerNonWebSource,
-                new ShortcutPromoter(
-                        new RankAwarePromoter(getConfig(), getCorpora())));
-        Promoter singleCorpusPromoter = new ShortcutPromoter(new ConcatPromoter());
-        SuggestionsProviderImpl provider = new SuggestionsProviderImpl(getConfig(),
-                getSourceTaskExecutor(),
-                getMainThreadHandler(),
-                getShortcutRepository(),
-                getCorpora(),
-                getCorpusRanker(),
-                getLogger());
-        provider.setAllPromoter(allPromoter);
-        provider.setSingleCorpusPromoter(singleCorpusPromoter);
-        return provider;
+        return new SuggestionsProviderImpl(getConfig(),
+              getSourceTaskExecutor(),
+              getMainThreadHandler(),
+              getLogger());
     }
 
     /**
-     * Gets the suggestion view factory.
+     * Gets the default suggestion view factory.
      * May only be called from the main thread.
      */
     public SuggestionViewFactory getSuggestionViewFactory() {
@@ -339,33 +377,29 @@ public class QsbApplication {
     }
 
     protected SuggestionViewFactory createSuggestionViewFactory() {
-        return new SuggestionViewInflater(getContext());
+        return new DefaultSuggestionViewFactory(getContext());
     }
 
-    /**
-     * Gets the corpus view factory.
-     * May only be called from the main thread.
-     */
-    public CorpusViewFactory getCorpusViewFactory() {
-        checkThread();
-        if (mCorpusViewFactory == null) {
-            mCorpusViewFactory = createCorpusViewFactory();
-        }
-        return mCorpusViewFactory;
+    public Promoter createBlendingPromoter() {
+        return new ShortcutPromoter(getConfig(),
+                new RankAwarePromoter(getConfig(), null, null), null);
     }
 
-    protected CorpusViewFactory createCorpusViewFactory() {
-        return new CorpusViewInflater(getContext());
+    public Promoter createSingleCorpusPromoter(Corpus corpus) {
+        return new SingleCorpusPromoter(corpus, Integer.MAX_VALUE);
     }
 
-    /**
-     * Creates a suggestions adapter.
-     * May only be called from the main thread.
-     */
-    public SuggestionsAdapter createSuggestionsAdapter() {
-        SuggestionViewFactory viewFactory = getSuggestionViewFactory();
-        DelayingSuggestionsAdapter adapter = new DelayingSuggestionsAdapter(viewFactory);
-        return adapter;
+    public Promoter createSingleCorpusResultsPromoter(Corpus corpus) {
+        return new SingleCorpusResultsPromoter(corpus, Integer.MAX_VALUE);
+    }
+
+    public Promoter createWebPromoter() {
+        return new WebPromoter(getConfig().getMaxShortcutsPerWebSource());
+    }
+
+    public Promoter createResultsPromoter() {
+        SuggestionFilter resultFilter = new ResultFilter();
+        return new ShortcutPromoter(getConfig(), null, resultFilter);
     }
 
     /**
@@ -381,7 +415,8 @@ public class QsbApplication {
     }
 
     protected GoogleSource createGoogleSource() {
-        return new GoogleSuggestClient(getContext());
+        return new GoogleSuggestClient(getContext(), getMainThreadHandler(),
+                getIconLoaderExecutor(), getConfig());
     }
 
     /**
@@ -435,5 +470,41 @@ public class QsbApplication {
 
     protected TextAppearanceFactory createTextAppearanceFactory() {
         return new TextAppearanceFactory(getContext());
+    }
+
+    public PreferenceControllerFactory createPreferenceControllerFactory(Activity activity) {
+        return new PreferenceControllerFactory(getSettings(), activity);
+    }
+
+    public synchronized HttpHelper getHttpHelper() {
+        if (mHttpHelper == null) {
+            mHttpHelper = createHttpHelper();
+        }
+        return mHttpHelper;
+    }
+
+    protected HttpHelper createHttpHelper() {
+        return new JavaNetHttpHelper(
+                new JavaNetHttpHelper.PassThroughRewriter(),
+                getConfig().getUserAgent());
+    }
+
+    public synchronized SearchBaseUrlHelper getSearchBaseUrlHelper() {
+        if (mSearchBaseUrlHelper == null) {
+            mSearchBaseUrlHelper = createSearchBaseUrlHelper();
+        }
+
+        return mSearchBaseUrlHelper;
+    }
+
+    protected SearchBaseUrlHelper createSearchBaseUrlHelper() {
+        // This cast to "SearchSettingsImpl" is somewhat ugly.
+        return new SearchBaseUrlHelper(getContext(), getHttpHelper(),
+                getSettings(), ((SearchSettingsImpl)getSettings()).getSearchPreferences());
+    }
+
+    public Help getHelp() {
+        // No point caching this, it's super cheap.
+        return new Help(getContext(), getConfig());
     }
 }

@@ -16,6 +16,7 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.NamedTaskExecutor;
 import com.android.quicksearchbox.util.Util;
 
 import android.app.PendingIntent;
@@ -28,13 +29,14 @@ import android.content.Intent;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.pm.PathPermission;
 import android.content.pm.ProviderInfo;
-import android.content.pm.PackageManager.NameNotFoundException;
 import android.database.Cursor;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
 import android.speech.RecognizerIntent;
 import android.util.Log;
 
@@ -66,10 +68,13 @@ public class SearchableSource extends AbstractSource {
     // Cached icon for the activity
     private Drawable.ConstantState mSourceIcon = null;
 
-    public SearchableSource(Context context, SearchableInfo searchable)
-            throws NameNotFoundException {
-        super(context);
+    private Uri mSuggestUriBase;
+
+    public SearchableSource(Context context, SearchableInfo searchable, Handler uiThread,
+            NamedTaskExecutor iconLoader) throws NameNotFoundException {
+        super(context, uiThread, iconLoader);
         ComponentName componentName = searchable.getSearchActivity();
+        if (DBG) Log.d(TAG, "created Searchable for " + componentName);
         mSearchable = searchable;
         mName = componentName.flattenToShortString();
         PackageManager pm = context.getPackageManager();
@@ -78,7 +83,7 @@ public class SearchableSource extends AbstractSource {
         mVersionCode = pkgInfo.versionCode;
     }
 
-    protected SearchableInfo getSearchableInfo() {
+    public SearchableInfo getSearchableInfo() {
         return mSearchable;
     }
 
@@ -235,10 +240,6 @@ public class SearchableSource extends AbstractSource {
         return mSearchable.getVoiceSearchEnabled();
     }
 
-    public boolean isLocationAware() {
-        return false;
-    }
-
     public Intent createVoiceSearchIntent(Bundle appData) {
         if (mSearchable.getVoiceSearchLaunchWebSearch()) {
             return createVoiceWebSearchIntent(appData);
@@ -338,32 +339,49 @@ public class SearchableSource extends AbstractSource {
         }
     }
 
-    /**
-     * This is a copy of {@link SearchManager#getSuggestions(SearchableInfo, String)}.
-     */
-    private static Cursor getSuggestions(Context context, SearchableInfo searchable, String query,
-            int queryLimit) {
+    public String getSuggestUri() {
+        Uri uri = getSuggestUriBase(mSearchable);
+        if (uri == null) return null;
+        return uri.toString();
+    }
+
+    private synchronized Uri getSuggestUriBase(SearchableInfo searchable) {
         if (searchable == null) {
             return null;
         }
+        if (mSuggestUriBase == null) {
 
-        String authority = searchable.getSuggestAuthority();
-        if (authority == null) {
-            return null;
+            String authority = searchable.getSuggestAuthority();
+            if (authority == null) {
+                return null;
+            }
+
+            Uri.Builder uriBuilder = new Uri.Builder()
+                    .scheme(ContentResolver.SCHEME_CONTENT)
+                    .authority(authority);
+
+            // if content path provided, insert it now
+            final String contentPath = searchable.getSuggestPath();
+            if (contentPath != null) {
+                uriBuilder.appendEncodedPath(contentPath);
+            }
+
+            // append standard suggestion query path
+            uriBuilder.appendPath(SearchManager.SUGGEST_URI_PATH_QUERY);
+            mSuggestUriBase = uriBuilder.build();
         }
+        return mSuggestUriBase;
+    }
 
-        Uri.Builder uriBuilder = new Uri.Builder()
-                .scheme(ContentResolver.SCHEME_CONTENT)
-                .authority(authority);
+    /**
+     * This is a copy of {@link SearchManager#getSuggestions(SearchableInfo, String)}.
+     */
+    private Cursor getSuggestions(Context context, SearchableInfo searchable, String query,
+            int queryLimit) {
 
-        // if content path provided, insert it now
-        final String contentPath = searchable.getSuggestPath();
-        if (contentPath != null) {
-            uriBuilder.appendEncodedPath(contentPath);
-        }
-
-        // append standard suggestion query path
-        uriBuilder.appendPath(SearchManager.SUGGEST_URI_PATH_QUERY);
+        Uri base = getSuggestUriBase(searchable);
+        if (base == null) return null;
+        Uri.Builder uriBuilder = base.buildUpon();
 
         // get the query selection, may be null
         String selection = searchable.getSuggestSelection();
@@ -384,7 +402,9 @@ public class SearchableSource extends AbstractSource {
             Log.d(TAG, "query(" + uri + ",null," + selection + ","
                     + Arrays.toString(selArgs) + ",null)");
         }
-        return context.getContentResolver().query(uri, null, selection, selArgs, null);
+        Cursor c = context.getContentResolver().query(uri, null, selection, selArgs, null);
+        if (DBG) Log.d(TAG, "Got cursor from " + mName + ": " + c);
+        return c;
     }
 
     private static Cursor getValidationCursor(Context context, SearchableInfo searchable,
@@ -417,8 +437,12 @@ public class SearchableSource extends AbstractSource {
         return context.getContentResolver().query(uri, null, null, null, null);
     }
 
-    public boolean isWebSuggestionSource() {
-        return false;
+    public int getMaxShortcuts(Config config) {
+        return config.getMaxShortcuts(getName());
+    }
+
+    public boolean includeInAll() {
+        return true;
     }
 
     public boolean queryAfterZeroResults() {

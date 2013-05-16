@@ -39,15 +39,15 @@ public class SuggestionsTest extends AndroidTestCase {
 
     @Override
     protected void setUp() throws Exception {
-        mExpectedCorpora = Arrays.asList(new Corpus[]{null,null});
-        mSuggestions = new Suggestions(null, 0, "foo", mExpectedCorpora);
+        mExpectedCorpora = Arrays.asList(MockCorpus.CORPUS_1, MockCorpus.WEB_CORPUS);
+        mSuggestions = new Suggestions("foo", mExpectedCorpora);
         mObserver = new MockDataSetObserver();
         mSuggestions.registerDataSetObserver(mObserver);
     }
 
     @Override
     protected void tearDown() throws Exception {
-        mSuggestions.close();
+        mSuggestions.release();
         mSuggestions = null;
     }
 
@@ -61,6 +61,13 @@ public class SuggestionsTest extends AndroidTestCase {
         for (int i=0; i<mExpectedCorpora.size(); ++i) {
             assertEquals(mExpectedCorpora.get(i), expectedCorpora.get(i));
         }
+    }
+
+    public void testExpectsCorpus() {
+        for (int i=0; i<mExpectedCorpora.size(); ++i) {
+            assertTrue(mSuggestions.expectsCorpus(mExpectedCorpora.get(i)));
+        }
+        assertFalse(mSuggestions.expectsCorpus(MockCorpus.CORPUS_2));
     }
 
     public void testGetUserQuery() {

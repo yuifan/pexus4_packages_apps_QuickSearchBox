@@ -16,7 +16,7 @@
 
 package com.android.quicksearchbox.ui;
 
-import com.android.quicksearchbox.SuggestionCursor;
+import com.android.quicksearchbox.Suggestion;
 
 /**
  * Interface to be implemented by any view appearing in the list of suggestions.
@@ -25,6 +25,14 @@ public interface SuggestionView {
     /**
      * Set the view's contents based on the given suggestion.
      */
-    void bindAsSuggestion(SuggestionCursor suggestion, SuggestionClickListener clickListener);
+    void bindAsSuggestion(Suggestion suggestion, String userQuery);
+
+    /**
+     * Binds this view to a list adapter.
+     *
+     * @param adapter The adapter of the list which the view is appearing in
+     * @param position The position of this view with the list.
+     */
+    void bindAdapter(SuggestionsAdapter<?> adapter, long position);
 
 }

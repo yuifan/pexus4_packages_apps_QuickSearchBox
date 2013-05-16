@@ -16,6 +16,14 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.tests.CrashingIconProvider;
+import com.android.quicksearchbox.util.NamedTaskExecutor;
+import com.android.quicksearchbox.util.PriorityThreadFactory;
+import com.android.quicksearchbox.util.SingleThreadNamedTaskExecutor;
+
+import android.os.Handler;
+import android.os.Looper;
+import android.os.Process;
 import android.test.suitebuilder.annotation.MediumTest;
 
 /**
@@ -25,9 +33,66 @@ import android.test.suitebuilder.annotation.MediumTest;
 @MediumTest
 public class PackageIconLoaderTest extends IconLoaderTest {
 
+    private ConsumerThread mThread;
+
+    @Override
+    public void setUp() throws Exception {
+        mThread = new ConsumerThread();
+        mThread.start();
+        // we do this afterwards, as we need to have the thread set up (it calls create()).
+        super.setUp();
+    }
+
+    @Override
+    public void tearDown() throws Exception {
+        mThread.exit();
+        super.tearDown();
+    }
+
     @Override
     protected IconLoader create() throws Exception {
-        return new PackageIconLoader(mContext, mContext.getPackageName());
+        NamedTaskExecutor executor = new SingleThreadNamedTaskExecutor(
+                new PriorityThreadFactory(Process.THREAD_PRIORITY_DEFAULT));
+        return new PackageIconLoader(mContext, mContext.getPackageName(), mThread.getHandler(),
+                executor);
+    }
+
+    public void testGetIconCrashingProvider() {
+        String uri = "content://" + CrashingIconProvider.AUTHORITY + "/icon";
+        assertNull(mLoader.getIcon(uri));
+    }
+
+    private class ConsumerThread extends Thread {
+        private Handler mHandler;
+        private final Object mSync = new Object();
+        public ConsumerThread() {
+        }
+        @Override
+        public void run() {
+            Looper.prepare();
+            synchronized (mSync) {
+                mHandler = new Handler();
+                mSync.notifyAll();
+            }
+            Looper.loop();
+        }
+        public Handler getHandler() {
+            synchronized (mSync) {
+                if (mHandler == null) {
+                    try {
+                        mSync.wait();
+                    } catch (InterruptedException e) {
+                    }
+                }
+                return mHandler;
+            }
+        }
+        public void exit() {
+            getHandler().post(new Runnable(){
+                public void run() {
+                    Looper.myLooper().quit();
+                }});
+        }
     }
 
 }

@@ -16,17 +16,22 @@
 
 package com.android.quicksearchbox.ui;
 
+import com.android.quicksearchbox.Corpora;
 import com.android.quicksearchbox.Corpus;
-import com.android.quicksearchbox.CorpusRanker;
+import com.android.quicksearchbox.R;
 
+import android.content.Context;
 import android.database.DataSetObserver;
 import android.graphics.drawable.Drawable;
 import android.util.Log;
+import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.BaseAdapter;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -37,58 +42,69 @@ public class CorporaAdapter extends BaseAdapter {
     private static final String TAG = "CorporaAdapter";
     private static final boolean DBG = false;
 
-    private final CorpusViewFactory mViewFactory;
+    private final Context mContext;
 
-    private final CorpusRanker mRanker;
+    private final Corpora mCorpora;
+
+    private final int mCorpusViewRes;
 
     private final DataSetObserver mCorporaObserver = new CorporaObserver();
 
-    private List<Corpus> mRankedEnabledCorpora;
+    private List<Corpus> mSortedCorpora;
 
-    private boolean mGridView;
+    private String mCurrentCorpusName;
 
-    private CorporaAdapter(CorpusViewFactory viewFactory,
-            CorpusRanker ranker, boolean gridView) {
-        mViewFactory = viewFactory;
-        mRanker = ranker;
-        mGridView = gridView;
-        mRanker.registerDataSetObserver(mCorporaObserver);
+    public CorporaAdapter(Context context, Corpora corpora, int corpusViewRes) {
+        mContext = context;
+        mCorpora = corpora;
+        mCorpusViewRes = corpusViewRes;
+        mCorpora.registerDataSetObserver(mCorporaObserver);
         updateCorpora();
     }
 
-    public static CorporaAdapter createListAdapter(CorpusViewFactory viewFactory,
-            CorpusRanker ranker) {
-        return new CorporaAdapter(viewFactory, ranker, false);
-    }
-
-    public static CorporaAdapter createGridAdapter(CorpusViewFactory viewFactory,
-            CorpusRanker ranker) {
-        return new CorporaAdapter(viewFactory, ranker, true);
-    }
-
-    private void updateCorpora() {
-        mRankedEnabledCorpora = new ArrayList<Corpus>();
-        for (Corpus corpus : mRanker.getRankedCorpora()) {
-            if (!corpus.isCorpusHidden()) {
-                mRankedEnabledCorpora.add(corpus);
-            }
-        }
+    public void setCurrentCorpus(Corpus corpus) {
+        mCurrentCorpusName = corpus == null ? null : corpus.getName();
         notifyDataSetChanged();
     }
 
+    private void updateCorpora() {
+        List<Corpus> enabledCorpora = mCorpora.getEnabledCorpora();
+        ArrayList<Corpus> sorted = new ArrayList<Corpus>(enabledCorpora.size());
+        for (Corpus corpus : enabledCorpora) {
+            if (!corpus.isCorpusHidden()) {
+                sorted.add(corpus);
+            }
+        }
+        Collections.sort(sorted, new CorpusComparator());
+        mSortedCorpora = sorted;
+        notifyDataSetChanged();
+    }
+
+    private static class CorpusComparator implements Comparator<Corpus> {
+        public int compare(Corpus corpus1, Corpus corpus2) {
+            // Comparing a corpus against itself
+            if (corpus1 == corpus2) return 0;
+            // Web always comes first
+            if (corpus1.isWebCorpus()) return -1;
+            if (corpus2.isWebCorpus()) return 1;
+            // Alphabetically by name
+            return corpus1.getLabel().toString().compareTo(corpus2.getLabel().toString());
+        }
+    }
+
     public void close() {
-        mRanker.unregisterDataSetObserver(mCorporaObserver);
+        mCorpora.unregisterDataSetObserver(mCorporaObserver);
     }
 
     public int getCount() {
-        return 1 + mRankedEnabledCorpora.size();
+        return 1 + (mSortedCorpora == null ? 0 : mSortedCorpora.size());
     }
 
     public Corpus getItem(int position) {
         if (position == 0) {
             return null;
         } else {
-            return mRankedEnabledCorpora.get(position - 1);
+            return mSortedCorpora.get(position - 1);
         }
     }
 
@@ -119,27 +135,51 @@ public class CorporaAdapter extends BaseAdapter {
             view = createView(parent);
         }
         Corpus corpus = getItem(position);
-        Drawable icon;
-        CharSequence label;
-        if (corpus == null) {
-            icon = mViewFactory.getGlobalSearchIcon();
-            label = mViewFactory.getGlobalSearchLabel();
-        } else {
-            icon = corpus.getCorpusIcon();
-            label = corpus.getLabel();
-        }
-        if (DBG) Log.d(TAG, "Binding " + position + ", label=" + label);
-        view.setIcon(icon);
-        view.setLabel(label);
+        if (DBG) Log.d(TAG, "Binding " + position + ", corpus=" + corpus);
+        bindView(view, corpus);
         return view;
     }
 
-    protected CorpusView createView(ViewGroup parent) {
-        if (mGridView) {
-            return mViewFactory.createGridCorpusView(parent);
+    protected void bindView(CorpusView view, Corpus corpus) {
+        Drawable icon = getCorpusIcon(corpus);
+        CharSequence label = getCorpusLabel(corpus);
+        boolean isCurrent = isCurrentCorpus(corpus);
+        if (DBG) Log.d(TAG, "bind:name=" + corpus + ",label=" + label + ",current=" + isCurrent);
+        view.setIcon(icon);
+        view.setLabel(label);
+        view.setChecked(isCurrent);
+    }
+
+    protected Drawable getCorpusIcon(Corpus corpus) {
+        if (corpus == null) {
+            return mContext.getResources().getDrawable(R.mipmap.search_app_icon);
         } else {
-            return mViewFactory.createListCorpusView(parent);
+            return corpus.getCorpusIcon();
         }
+    }
+
+    protected CharSequence getCorpusLabel(Corpus corpus) {
+        if (corpus == null) {
+            return mContext.getText(R.string.corpus_label_global);
+        } else {
+            return corpus.getLabel();
+        }
+    }
+
+    protected boolean isCurrentCorpus(Corpus corpus) {
+        if (corpus == null) {
+            return mCurrentCorpusName == null;
+        } else {
+            return corpus.getName().equals(mCurrentCorpusName);
+        }
+    }
+
+    protected CorpusView createView(ViewGroup parent) {
+        return (CorpusView) LayoutInflater.from(mContext).inflate(mCorpusViewRes, parent, false);
+    }
+
+    protected LayoutInflater getInflater() {
+        return (LayoutInflater) mContext.getSystemService(Context.LAYOUT_INFLATER_SERVICE);
     }
 
     private class CorporaObserver extends DataSetObserver {

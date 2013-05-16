@@ -16,16 +16,16 @@
 
 package com.android.quicksearchbox.ui;
 
-import com.android.quicksearchbox.QsbApplication;
 import com.android.quicksearchbox.R;
 import com.android.quicksearchbox.Source;
 import com.android.quicksearchbox.Suggestion;
-import com.android.quicksearchbox.SuggestionCursor;
-import com.android.quicksearchbox.SuggestionFormatter;
+import com.android.quicksearchbox.util.Consumer;
+import com.android.quicksearchbox.util.NowOrLater;
 
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.text.Html;
 import android.text.Spannable;
 import android.text.SpannableString;
@@ -33,45 +33,35 @@ import android.text.TextUtils;
 import android.text.style.TextAppearanceSpan;
 import android.util.AttributeSet;
 import android.util.Log;
-import android.view.KeyEvent;
 import android.view.View;
 import android.widget.ImageView;
-import android.widget.ListView;
-import android.widget.RelativeLayout;
 import android.widget.TextView;
 
 /**
  * View for the items in the suggestions list. This includes promoted suggestions,
  * sources, and suggestions under each source.
  */
-public class DefaultSuggestionView extends RelativeLayout implements SuggestionView {
+public class DefaultSuggestionView extends BaseSuggestionView {
 
     private static final boolean DBG = false;
-    private static final String TAG = "QSB.SuggestionView";
 
-    private TextView mText1;
-    private TextView mText2;
-    private ImageView mIcon1;
-    private ImageView mIcon2;
-    private final SuggestionFormatter mSuggestionFormatter;
-    private boolean mRefineable;
-    private int mPosition;
-    private SuggestionClickListener mClickListener;
-    private KeyListener mKeyListener;
+    private static final String VIEW_ID = "default";
+
+    private final String TAG = "QSB.DefaultSuggestionView";
+
+    private AsyncIcon mAsyncIcon1;
+    private AsyncIcon mAsyncIcon2;
 
     public DefaultSuggestionView(Context context, AttributeSet attrs, int defStyle) {
         super(context, attrs, defStyle);
-        mSuggestionFormatter = QsbApplication.get(context).getSuggestionFormatter();
     }
 
     public DefaultSuggestionView(Context context, AttributeSet attrs) {
         super(context, attrs);
-        mSuggestionFormatter = QsbApplication.get(context).getSuggestionFormatter();
     }
 
     public DefaultSuggestionView(Context context) {
         super(context);
-        mSuggestionFormatter = QsbApplication.get(context).getSuggestionFormatter();
     }
 
     @Override
@@ -79,32 +69,30 @@ public class DefaultSuggestionView extends RelativeLayout implements SuggestionV
         super.onFinishInflate();
         mText1 = (TextView) findViewById(R.id.text1);
         mText2 = (TextView) findViewById(R.id.text2);
-        mIcon1 = (ImageView) findViewById(R.id.icon1);
-        mIcon2 = (ImageView) findViewById(R.id.icon2);
-        // for some reason, creating mKeyListener inside the constructor causes it not to work.
-        mKeyListener = new KeyListener();
-
-        setOnKeyListener(mKeyListener);
+        mAsyncIcon1 = new AsyncIcon(mIcon1) {
+            // override default icon (when no other available) with default source icon
+            @Override
+            protected String getFallbackIconId(Source source) {
+                return source.getSourceIconUri().toString();
+            }
+            @Override
+            protected Drawable getFallbackIcon(Source source) {
+                return source.getSourceIcon();
+            }
+        };
+        mAsyncIcon2 = new AsyncIcon(mIcon2);
     }
 
-    public void bindAsSuggestion(SuggestionCursor suggestion, SuggestionClickListener onClick) {
-        setOnClickListener(new ClickListener());
-        setOnLongClickListener(new LongClickListener());
-        mPosition = suggestion.getPosition();
-        mClickListener = onClick;
+    @Override
+    public void bindAsSuggestion(Suggestion suggestion, String userQuery) {
+        super.bindAsSuggestion(suggestion, userQuery);
 
-        CharSequence text1 = formatText(suggestion.getSuggestionText1(), suggestion, true);
+        CharSequence text1 = formatText(suggestion.getSuggestionText1(), suggestion);
         CharSequence text2 = suggestion.getSuggestionText2Url();
         if (text2 != null) {
             text2 = formatUrl(text2);
         } else {
-            text2 = formatText(suggestion.getSuggestionText2(), suggestion, false);
-        }
-        Drawable icon1 = getSuggestionDrawableIcon1(suggestion);
-        Drawable icon2 = getSuggestionDrawableIcon2(suggestion);
-        if (DBG) {
-            Log.d(TAG, "bindAsSuggestion(), text1=" + text1 + ",text2=" + text2
-                    + ",icon1=" + icon1 + ",icon2=" + icon2);
+            text2 = formatText(suggestion.getSuggestionText2(), suggestion);
         }
         // If there is no text for the second line, allow the first line to be up to two lines
         if (TextUtils.isEmpty(text2)) {
@@ -118,39 +106,12 @@ public class DefaultSuggestionView extends RelativeLayout implements SuggestionV
         }
         setText1(text1);
         setText2(text2);
-        setIcon1(icon1);
-        setIcon2(icon2, null);
-        updateRefinable(suggestion);
-    }
+        mAsyncIcon1.set(suggestion.getSuggestionSource(), suggestion.getSuggestionIcon1());
+        mAsyncIcon2.set(suggestion.getSuggestionSource(), suggestion.getSuggestionIcon2());
 
-    protected void updateRefinable(SuggestionCursor suggestion) {
-        mRefineable =
-                suggestion.isWebSearchSuggestion()
-                && mIcon2.getDrawable() == null
-                && !TextUtils.isEmpty(suggestion.getSuggestionQuery());
-        setRefinable(suggestion, mRefineable);
-    }
-
-    protected void setRefinable(SuggestionCursor suggestion, boolean refinable) {
-        if (refinable) {
-            mIcon2.setOnClickListener(new View.OnClickListener() {
-                public void onClick(View v) {
-                    Log.d(TAG, "Clicked query refine");
-                    SuggestionsAdapter adapter =
-                            (SuggestionsAdapter) ((ListView) getParent()).getAdapter();
-                    adapter.onIcon2Clicked(mPosition);
-                }
-            });
-            mIcon2.setFocusable(true);
-            mIcon2.setOnKeyListener(mKeyListener);
-            Drawable icon2 = getContext().getResources().getDrawable(R.drawable.edit_query);
-            Drawable background =
-                    getContext().getResources().getDrawable(R.drawable.edit_query_background);
-            setIcon2(icon2, background);
-        } else {
-            mIcon2.setOnClickListener(null);
-            mIcon2.setFocusable(false);
-            mIcon2.setOnKeyListener(null);
+        if (DBG) {
+            Log.d(TAG, "bindAsSuggestion(), text1=" + text1 + ",text2=" + text2 + ",q='" +
+                    userQuery + ",fromHistory=" + isFromHistory(suggestion));
         }
     }
 
@@ -163,27 +124,10 @@ public class DefaultSuggestionView extends RelativeLayout implements SuggestionV
         return text;
     }
 
-    public Drawable getSuggestionDrawableIcon1(Suggestion suggestion) {
-        Source source = suggestion.getSuggestionSource();
-        String iconId = suggestion.getSuggestionIcon1();
-        Drawable icon1 = iconId == null ? null : source.getIcon(iconId);
-        return icon1 == null ? source.getSourceIcon() : icon1;
-    }
-
-    public Drawable getSuggestionDrawableIcon2(Suggestion suggestion) {
-        Source source = suggestion.getSuggestionSource();
-        String iconId = suggestion.getSuggestionIcon2();
-        return iconId == null ? null : source.getIcon(iconId);
-    }
-
-    private CharSequence formatText(String str, SuggestionCursor suggestion,
-                boolean highlightSuggested) {
+    private CharSequence formatText(String str, Suggestion suggestion) {
         boolean isHtml = "html".equals(suggestion.getSuggestionFormat());
         if (isHtml && looksLikeHtml(str)) {
             return Html.fromHtml(str);
-        } else if (highlightSuggested && suggestion.isWebSearchSuggestion() &&
-                !TextUtils.isEmpty(suggestion.getUserQuery())) {
-            return mSuggestionFormatter.formatSuggestion(suggestion.getUserQuery(), str);
         } else {
             return str;
         }
@@ -196,40 +140,6 @@ public class DefaultSuggestionView extends RelativeLayout implements SuggestionV
             if (c == '>' || c == '&') return true;
         }
         return false;
-    }
-
-    /**
-     * Sets the first text line.
-     */
-    private void setText1(CharSequence text) {
-        mText1.setText(text);
-    }
-
-    /**
-     * Sets the second text line.
-     */
-    private void setText2(CharSequence text) {
-        mText2.setText(text);
-        if (TextUtils.isEmpty(text)) {
-            mText2.setVisibility(GONE);
-        } else {
-            mText2.setVisibility(VISIBLE);
-        }
-    }
-
-    /**
-     * Sets the left-hand-side icon.
-     */
-    private void setIcon1(Drawable icon) {
-        setViewDrawable(mIcon1, icon);
-    }
-
-    /**
-     * Sets the right-hand-side icon and its background.
-     */
-    private void setIcon2(Drawable icon, Drawable background) {
-        setViewDrawable(mIcon2, icon);
-        mIcon2.setBackgroundDrawable(background);
     }
 
     /**
@@ -256,44 +166,87 @@ public class DefaultSuggestionView extends RelativeLayout implements SuggestionV
         }
     }
 
-    protected void fireOnSuggestionQuickContactClicked() {
-        if (mClickListener != null) {
-            mClickListener.onSuggestionQuickContactClicked(mPosition);
-        }
-    }
+    private class AsyncIcon {
+        private final ImageView mView;
+        private String mCurrentId;
+        private String mWantedId;
 
-    private class ClickListener implements OnClickListener {
-        public void onClick(View v) {
-            if (DBG) Log.d(TAG, "onItemClick(" + mPosition + ")");
-            if (mClickListener != null) {
-                mClickListener.onSuggestionClicked(mPosition);
-            }
+        public AsyncIcon(ImageView view) {
+            mView = view;
         }
-    }
 
-    private class LongClickListener implements OnLongClickListener {
-        public boolean onLongClick(View v) {
-            if (DBG) Log.d(TAG, "onItemLongClick(" + mPosition + ")");
-            if (mClickListener != null) {
-                return mClickListener.onSuggestionLongClicked(mPosition);
-            }
-            return false;
-        }
-    }
-
-    private class KeyListener implements View.OnKeyListener {
-        public boolean onKey(View v, int keyCode, KeyEvent event) {
-            boolean consumed = false;
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v != mIcon2) {
-                    consumed = mIcon2.requestFocus();
-                    if (DBG) Log.d(TAG, "onKey Icon2 accepted focus: " + consumed);
-                } else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && v == mIcon2) {
-                    consumed = requestFocus();
-                    if (DBG) Log.d(TAG, "onKey SuggestionView accepted focus: " + consumed);
+        public void set(final Source source, final String sourceIconId) {
+            if (sourceIconId != null) {
+                // The iconId can just be a package-relative resource ID, which may overlap with
+                // other packages. Make sure it's globally unique.
+                Uri iconUri = source.getIconUri(sourceIconId);
+                final String uniqueIconId = iconUri == null ? null : iconUri.toString();
+                mWantedId = uniqueIconId;
+                if (!TextUtils.equals(mWantedId, mCurrentId)) {
+                    if (DBG) Log.d(TAG, "getting icon Id=" + uniqueIconId);
+                    NowOrLater<Drawable> icon = source.getIcon(sourceIconId);
+                    if (icon.haveNow()) {
+                        if (DBG) Log.d(TAG, "getIcon ready now");
+                        handleNewDrawable(icon.getNow(), uniqueIconId, source);
+                    } else {
+                        // make sure old icon is not visible while new one is loaded
+                        if (DBG) Log.d(TAG , "getIcon getting later");
+                        clearDrawable();
+                        icon.getLater(new Consumer<Drawable>(){
+                            public boolean consume(Drawable icon) {
+                                if (DBG) {
+                                    Log.d(TAG, "IconConsumer.consume got id " + uniqueIconId +
+                                            " want id " + mWantedId);
+                                }
+                                // ensure we have not been re-bound since the request was made.
+                                if (TextUtils.equals(uniqueIconId, mWantedId)) {
+                                    handleNewDrawable(icon, uniqueIconId, source);
+                                    return true;
+                                }
+                                return false;
+                            }});
+                    }
                 }
+            } else {
+                mWantedId = null;
+                handleNewDrawable(null, null, source);
             }
-            return consumed;
+        }
+
+        private void handleNewDrawable(Drawable icon, String id, Source source) {
+            if (icon == null) {
+                mWantedId = getFallbackIconId(source);
+                if (TextUtils.equals(mWantedId, mCurrentId)) {
+                    return;
+                }
+                icon = getFallbackIcon(source);
+            }
+            setDrawable(icon, id);
+        }
+
+        private void setDrawable(Drawable icon, String id) {
+            mCurrentId = id;
+            setViewDrawable(mView, icon);
+        }
+
+        private void clearDrawable() {
+            mCurrentId = null;
+            mView.setImageDrawable(null);
+        }
+
+        protected String getFallbackIconId(Source source) {
+            return null;
+        }
+
+        protected Drawable getFallbackIcon(Source source) {
+            return null;
+        }
+
+    }
+
+    public static class Factory extends SuggestionViewInflater {
+        public Factory(Context context) {
+            super(VIEW_ID, DefaultSuggestionView.class, R.layout.suggestion, context);
         }
     }
 

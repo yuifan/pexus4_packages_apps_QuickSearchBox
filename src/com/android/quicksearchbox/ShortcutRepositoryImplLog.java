@@ -16,11 +16,17 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.Consumer;
+import com.android.quicksearchbox.util.Consumers;
+import com.android.quicksearchbox.util.SQLiteAsyncQuery;
 import com.android.quicksearchbox.util.SQLiteTransaction;
 import com.android.quicksearchbox.util.Util;
 import com.google.common.annotations.VisibleForTesting;
 
+import org.json.JSONException;
+
 import android.app.SearchManager;
+import android.content.ComponentName;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
@@ -53,7 +59,7 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
     private static final String TAG = "QSB.ShortcutRepositoryImplLog";
 
     private static final String DB_NAME = "qsb-log.db";
-    private static final int DB_VERSION = 30;
+    private static final int DB_VERSION = 32;
 
     private static final String HAS_HISTORY_QUERY =
         "SELECT " + Shortcuts.intent_key.fullName + " FROM " + Shortcuts.TABLE_NAME;
@@ -74,8 +80,6 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
     private final Executor mLogExecutor;
     private final DbOpenHelper mOpenHelper;
     private final String mSearchSpinner;
-
-    private final UpdateScheduler mUpdateScheduler;
 
     /**
      * Create an instance to the repo.
@@ -100,17 +104,10 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         mRefresher = refresher;
         mUiThread = uiThread;
         mLogExecutor = logExecutor;
-        mUpdateScheduler = new UpdateScheduler(uiThread);
         mOpenHelper = new DbOpenHelper(context, name, DB_VERSION, config);
         buildShortcutQueries();
 
         mSearchSpinner = Util.getResourceUri(mContext, R.drawable.search_spinner).toString();
-    }
-
-    @VisibleForTesting
-    ShortcutRepositoryImplLog disableUpdateDelay() {
-        mUpdateScheduler.disable();
-        return this;
     }
 
     // clicklog first, since that's where restrict the result set
@@ -131,6 +128,7 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
             Shortcuts.icon1 + AS + SearchManager.SUGGEST_COLUMN_ICON_1,
             Shortcuts.icon2 + AS + SearchManager.SUGGEST_COLUMN_ICON_2,
             Shortcuts.intent_action + AS + SearchManager.SUGGEST_COLUMN_INTENT_ACTION,
+            Shortcuts.intent_component.fullName,
             Shortcuts.intent_data + AS + SearchManager.SUGGEST_COLUMN_INTENT_DATA,
             Shortcuts.intent_query + AS + SearchManager.SUGGEST_COLUMN_QUERY,
             Shortcuts.intent_extradata + AS + SearchManager.SUGGEST_COLUMN_INTENT_EXTRA_DATA,
@@ -138,6 +136,7 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
             Shortcuts.spinner_while_refreshing + AS +
                     SearchManager.SUGGEST_COLUMN_SPINNER_WHILE_REFRESHING,
             Shortcuts.log_type + AS + CursorBackedSuggestionCursor.SUGGEST_COLUMN_LOG_TYPE,
+            Shortcuts.custom_columns.fullName,
         };
 
     // Avoid GLOB by using >= AND <, with some manipulation (see nextString(String)).
@@ -204,23 +203,41 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
     private void runTransactionAsync(final SQLiteTransaction transaction) {
         mLogExecutor.execute(new Runnable() {
             public void run() {
-                mUpdateScheduler.waitUntilUpdatesCanBeRun();
                 transaction.run(mOpenHelper.getWritableDatabase());
+            }
+        });
+    }
+
+    private <A> void runQueryAsync(final SQLiteAsyncQuery<A> query, final Consumer<A> consumer) {
+        mLogExecutor.execute(new Runnable() {
+            public void run() {
+                query.run(mOpenHelper.getReadableDatabase(), consumer);
             }
         });
     }
 
 // --------------------- Interface ShortcutRepository ---------------------
 
-    public boolean hasHistory() {
-        SQLiteDatabase db = mOpenHelper.getReadableDatabase();
-        Cursor cursor = db.rawQuery(HAS_HISTORY_QUERY, null);
-        try {
-            if (DBG) Log.d(TAG, "hasHistory(): cursor=" + cursor);
-            return cursor != null && cursor.getCount() > 0;
-        } finally {
-            if (cursor != null) cursor.close();
-        }
+    public void hasHistory(Consumer<Boolean> consumer) {
+        runQueryAsync(new SQLiteAsyncQuery<Boolean>() {
+            @Override
+            protected Boolean performQuery(SQLiteDatabase db) {
+                return hasHistory(db);
+            }
+        }, consumer);
+    }
+
+    public void removeFromHistory(SuggestionCursor suggestions, int position) {
+        suggestions.moveTo(position);
+        final String intentKey = makeIntentKey(suggestions);
+        runTransactionAsync(new SQLiteTransaction() {
+            @Override
+            public boolean performTransaction(SQLiteDatabase db) {
+                db.delete(Shortcuts.TABLE_NAME, Shortcuts.intent_key.fullName + " = ?",
+                        new String[]{ intentKey });
+                return true;
+            }
+        });
     }
 
     public void clearHistory() {
@@ -249,22 +266,46 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         reportClickAtTime(suggestions, position, now);
     }
 
-    public ShortcutCursor getShortcutsForQuery(String query, Collection<Corpus> allowedCorpora) {
-        ShortcutCursor shortcuts = getShortcutsForQuery(query, allowedCorpora,
-                        System.currentTimeMillis());
-        mUpdateScheduler.delayUpdates();
-        return shortcuts;
+    public void getShortcutsForQuery(final String query, final Collection<Corpus> allowedCorpora,
+            final boolean allowWebSearchShortcuts, final Consumer<ShortcutCursor> consumer) {
+        final long now = System.currentTimeMillis();
+        mLogExecutor.execute(new Runnable() {
+            public void run() {
+                ShortcutCursor shortcuts = getShortcutsForQuery(query, allowedCorpora,
+                        allowWebSearchShortcuts, now);
+                Consumers.consumeCloseable(consumer, shortcuts);
+            }
+        });
     }
 
     public void updateShortcut(Source source, String shortcutId, SuggestionCursor refreshed) {
         refreshShortcut(source, shortcutId, refreshed);
     }
 
-    public Map<String,Integer> getCorpusScores() {
-        return getCorpusScores(mConfig.getMinClicksForSourceRanking());
+    public void getCorpusScores(final Consumer<Map<String, Integer>> consumer) {
+        runQueryAsync(new SQLiteAsyncQuery<Map<String, Integer>>() {
+            @Override
+            protected Map<String, Integer> performQuery(SQLiteDatabase db) {
+                return getCorpusScores();
+            }
+        }, consumer);
     }
 
 // -------------------------- end ShortcutRepository --------------------------
+
+    private boolean hasHistory(SQLiteDatabase db) {
+        Cursor cursor = db.rawQuery(HAS_HISTORY_QUERY, null);
+        try {
+            if (DBG) Log.d(TAG, "hasHistory(): cursor=" + cursor);
+            return cursor != null && cursor.getCount() > 0;
+        } finally {
+            if (cursor != null) cursor.close();
+        }
+    }
+
+    private Map<String,Integer> getCorpusScores() {
+        return getCorpusScores(mConfig.getMinClicksForSourceRanking());
+    }
 
     private boolean shouldRefresh(Suggestion suggestion) {
         return mRefresher.shouldRefresh(suggestion.getSuggestionSource(),
@@ -272,7 +313,8 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
     }
 
     @VisibleForTesting
-    ShortcutCursor getShortcutsForQuery(String query, Collection<Corpus> allowedCorpora, long now) {
+    ShortcutCursor getShortcutsForQuery(String query, Collection<Corpus> allowedCorpora,
+            boolean allowWebSearchShortcuts, long now) {
         if (DBG) Log.d(TAG, "getShortcutsForQuery(" + query + "," + allowedCorpora + ")");
         String sql = query.length() == 0 ? mEmptyQueryShortcutQuery : mShortcutQuery;
         String[] params = buildShortcutQueryParams(query, now);
@@ -294,7 +336,7 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         }
 
         return new ShortcutCursor(new SuggestionCursorImpl(allowedSources, query, cursor),
-                mUiThread, mRefresher, this);
+                allowWebSearchShortcuts, mUiThread, mRefresher, this);
     }
 
     @VisibleForTesting
@@ -331,17 +373,19 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
     private class SuggestionCursorImpl extends CursorBackedSuggestionCursor {
 
         private final HashMap<String, Source> mAllowedSources;
+        private final int mExtrasColumn;
 
         public SuggestionCursorImpl(HashMap<String,Source> allowedSources,
                 String userQuery, Cursor cursor) {
             super(userQuery, cursor);
             mAllowedSources = allowedSources;
+            mExtrasColumn = cursor.getColumnIndex(Shortcuts.custom_columns.name());
         }
 
         @Override
         public Source getSuggestionSource() {
-            // TODO: Using ordinal() is hacky, look up the column instead
-            String srcStr = mCursor.getString(Shortcuts.source.ordinal());
+            int srcCol = mCursor.getColumnIndex(Shortcuts.source.name());
+            String srcStr = mCursor.getString(srcCol);
             if (srcStr == null) {
                 throw new NullPointerException("Missing source for shortcut.");
             }
@@ -365,6 +409,15 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         }
 
         @Override
+        public ComponentName getSuggestionIntentComponent() {
+            int componentCol = mCursor.getColumnIndex(Shortcuts.intent_component.name());
+            // We don't fall back to getSuggestionSource().getIntentComponent() because
+            // we want to return the same value that getSuggestionIntentComponent() did for the
+            // original suggestion.
+            return stringToComponentName(mCursor.getString(componentCol));
+        }
+
+        @Override
         public String getSuggestionIcon2() {
             if (isSpinnerWhileRefreshing() && shouldRefresh(this)) {
                 if (DBG) Log.d(TAG, "shortcut " + getShortcutId() + " refreshing");
@@ -378,6 +431,40 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
             return true;
         }
 
+        public boolean isHistorySuggestion() {
+            // This always returns false, even for suggestions that originally came
+            // from server-side history, since we'd otherwise have to parse the Genie
+            // extra data. This is ok, since this method is only used for the
+            // "Remove from history" UI, which is also shown for all shortcuts.
+            return false;
+        }
+
+        @Override
+        public SuggestionExtras getExtras() {
+            String json = mCursor.getString(mExtrasColumn);
+            if (!TextUtils.isEmpty(json)) {
+                try {
+                    return new JsonBackedSuggestionExtras(json);
+                } catch (JSONException e) {
+                    Log.e(TAG, "Could not parse JSON extras from DB: " + json);
+                }
+            }
+            return null;
+        }
+
+        public Collection<String> getExtraColumns() {
+            /*
+             * We always return null here because:
+             * - to return an accurate value, we'd have to aggregate all the extra columns in all
+             *   shortcuts in the shortcuts table, which would mean parsing ALL the JSON contained
+             *   therein
+             * - ListSuggestionCursor does this aggregation, and does it lazily
+             * - All shortcuts are put into a ListSuggestionCursor during the promotion process, so
+             *   relying on ListSuggestionCursor to do the aggregation means that we only parse the
+             *   JSON for shortcuts that are actually displayed.
+             */
+            return null;
+        }
     }
 
     /**
@@ -440,9 +527,66 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
 
     private ContentValues makeShortcutRow(Suggestion suggestion) {
         String intentAction = suggestion.getSuggestionIntentAction();
+        String intentComponent = componentNameToString(suggestion.getSuggestionIntentComponent());
         String intentData = suggestion.getSuggestionIntentDataString();
         String intentQuery = suggestion.getSuggestionQuery();
         String intentExtraData = suggestion.getSuggestionIntentExtraData();
+
+        Source source = suggestion.getSuggestionSource();
+        String sourceName = source.getName();
+
+        String intentKey = makeIntentKey(suggestion);
+
+        // Get URIs for all icons, to make sure that they are stable
+        String icon1Uri = getIconUriString(source, suggestion.getSuggestionIcon1());
+        String icon2Uri = getIconUriString(source, suggestion.getSuggestionIcon2());
+
+        String extrasJson = null;
+        SuggestionExtras extras = suggestion.getExtras();
+        if (extras != null) {
+            // flatten any custom columns to JSON. We need to keep any custom columns so that
+            // shortcuts for custom suggestion views work properly.
+            try {
+                extrasJson = extras.toJsonString();
+            } catch (JSONException e) {
+                Log.e(TAG, "Could not flatten extras to JSON from " + suggestion, e);
+            }
+        }
+
+        ContentValues cv = new ContentValues();
+        cv.put(Shortcuts.intent_key.name(), intentKey);
+        cv.put(Shortcuts.source.name(), sourceName);
+        cv.put(Shortcuts.source_version_code.name(), source.getVersionCode());
+        cv.put(Shortcuts.format.name(), suggestion.getSuggestionFormat());
+        cv.put(Shortcuts.title.name(), suggestion.getSuggestionText1());
+        cv.put(Shortcuts.description.name(), suggestion.getSuggestionText2());
+        cv.put(Shortcuts.description_url.name(), suggestion.getSuggestionText2Url());
+        cv.put(Shortcuts.icon1.name(), icon1Uri);
+        cv.put(Shortcuts.icon2.name(), icon2Uri);
+        cv.put(Shortcuts.intent_action.name(), intentAction);
+        cv.put(Shortcuts.intent_component.name(), intentComponent);
+        cv.put(Shortcuts.intent_data.name(), intentData);
+        cv.put(Shortcuts.intent_query.name(), intentQuery);
+        cv.put(Shortcuts.intent_extradata.name(), intentExtraData);
+        cv.put(Shortcuts.shortcut_id.name(), suggestion.getShortcutId());
+        if (suggestion.isSpinnerWhileRefreshing()) {
+            cv.put(Shortcuts.spinner_while_refreshing.name(), "true");
+        }
+        cv.put(Shortcuts.log_type.name(), suggestion.getSuggestionLogType());
+        cv.put(Shortcuts.custom_columns.name(), extrasJson);
+
+        return cv;
+    }
+
+    /**
+     * Makes a string of the form source#intentData#intentAction#intentQuery
+     * for use as a unique identifier of a suggestion.
+     * */
+    private String makeIntentKey(Suggestion suggestion) {
+        String intentAction = suggestion.getSuggestionIntentAction();
+        String intentComponent = componentNameToString(suggestion.getSuggestionIntentComponent());
+        String intentData = suggestion.getSuggestionIntentDataString();
+        String intentQuery = suggestion.getSuggestionQuery();
 
         Source source = suggestion.getSuggestionSource();
         String sourceName = source.getName();
@@ -456,38 +600,23 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
             key.append(intentAction);
         }
         key.append("#");
+        if (intentComponent != null) {
+            key.append(intentComponent);
+        }
+        key.append("#");
         if (intentQuery != null) {
             key.append(intentQuery);
         }
-        // A string of the form source#intentData#intentAction#intentQuery 
-        // for use as a unique identifier of a suggestion.
-        String intentKey = key.toString();
 
-        // Get URIs for all icons, to make sure that they are stable
-        String icon1Uri = getIconUriString(source, suggestion.getSuggestionIcon1());
-        String icon2Uri = getIconUriString(source, suggestion.getSuggestionIcon2());
+        return key.toString();
+    }
 
-        ContentValues cv = new ContentValues();
-        cv.put(Shortcuts.intent_key.name(), intentKey);
-        cv.put(Shortcuts.source.name(), sourceName);
-        cv.put(Shortcuts.source_version_code.name(), source.getVersionCode());
-        cv.put(Shortcuts.format.name(), suggestion.getSuggestionFormat());
-        cv.put(Shortcuts.title.name(), suggestion.getSuggestionText1());
-        cv.put(Shortcuts.description.name(), suggestion.getSuggestionText2());
-        cv.put(Shortcuts.description_url.name(), suggestion.getSuggestionText2Url());
-        cv.put(Shortcuts.icon1.name(), icon1Uri);
-        cv.put(Shortcuts.icon2.name(), icon2Uri);
-        cv.put(Shortcuts.intent_action.name(), intentAction);
-        cv.put(Shortcuts.intent_data.name(), intentData);
-        cv.put(Shortcuts.intent_query.name(), intentQuery);
-        cv.put(Shortcuts.intent_extradata.name(), intentExtraData);
-        cv.put(Shortcuts.shortcut_id.name(), suggestion.getShortcutId());
-        if (suggestion.isSpinnerWhileRefreshing()) {
-            cv.put(Shortcuts.spinner_while_refreshing.name(), "true");
-        }
-        cv.put(Shortcuts.log_type.name(), suggestion.getSuggestionLogType());
+    private String componentNameToString(ComponentName component) {
+        return component == null ? null : component.flattenToShortString();
+    }
 
-        return cv;
+    private ComponentName stringToComponentName(String str) {
+        return str == null ? null : ComponentName.unflattenFromString(str);
     }
 
     private String getIconUriString(Source source, String drawableId) {
@@ -553,43 +682,6 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         });
     }
 
-    private class UpdateScheduler implements Runnable {
-        private static final int UPDATE_DELAY_MILLIS = 300;
-        private final Handler mHandler;
-        private boolean mCanUpdateNow;
-        private boolean mDisabled;
-
-        public UpdateScheduler(Handler handler) {
-            mHandler = handler;
-            mCanUpdateNow = false;
-        }
-
-        // for testing only
-        public void disable() {
-            mDisabled = true;
-        }
-
-        public synchronized void run() {
-            mCanUpdateNow = true;
-            notifyAll();
-        }
-
-        public synchronized void delayUpdates() {
-            mCanUpdateNow = false;
-            mHandler.removeCallbacks(this);
-            mHandler.postDelayed(this, UPDATE_DELAY_MILLIS);
-        }
-
-        public synchronized void waitUntilUpdatesCanBeRun() {
-            if (mDisabled) return;
-            while (!mCanUpdateNow) {
-                try {
-                    wait();
-                } catch (InterruptedException e) {}
-            }
-        }
-    }
-
 // -------------------------- TABLES --------------------------
 
     /**
@@ -606,12 +698,14 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
         icon1,
         icon2,
         intent_action,
+        intent_component,
         intent_data,
         intent_query,
         intent_extradata,
         shortcut_id,
         spinner_while_refreshing,
-        log_type;
+        log_type,
+        custom_columns;
 
         static final String TABLE_NAME = "shortcuts";
 
@@ -705,10 +799,6 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
             mConfig = config;
         }
 
-        public String getPath() {
-            return mPath;
-        }
-
         @Override
         public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
             // The shortcuts info is not all that important, so we just drop the tables
@@ -766,12 +856,14 @@ public class ShortcutRepositoryImplLog implements ShortcutRepository {
                     Shortcuts.icon1.name() + " TEXT, " +
                     Shortcuts.icon2.name() + " TEXT, " +
                     Shortcuts.intent_action.name() + " TEXT, " +
+                    Shortcuts.intent_component.name() + " TEXT, " +
                     Shortcuts.intent_data.name() + " TEXT, " +
                     Shortcuts.intent_query.name() + " TEXT, " +
                     Shortcuts.intent_extradata.name() + " TEXT, " +
                     Shortcuts.shortcut_id.name() + " TEXT, " +
                     Shortcuts.spinner_while_refreshing.name() + " TEXT, " +
-                    Shortcuts.log_type.name() + " TEXT" +
+                    Shortcuts.log_type.name() + " TEXT, " +
+                    Shortcuts.custom_columns.name() + " TEXT" +
                     ");");
 
             // index for fast lookup of shortcuts by shortcut_id

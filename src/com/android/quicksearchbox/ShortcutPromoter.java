@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2009 The Android Open Source Project
+ * Copyright (C) 2010 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,45 +16,43 @@
 
 package com.android.quicksearchbox;
 
-import android.util.Log;
-
-import java.util.ArrayList;
+import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.HashMultiset;
 
 /**
- * A promoter that first promotes any shortcuts, and then delegates to another
- * promoter.
+ * A promoter limits the maximum number of shortcuts per source
+ * (from non-web sources) and blends results
+ * from multiple sources.
  */
-public class ShortcutPromoter extends PromoterWrapper {
+public class ShortcutPromoter extends AbstractPromoter {
 
-    private static final String TAG = "QSB.ShortcutPromoter";
-    private static final boolean DBG = false;
-
-    /**
-     * Creates a new ShortcutPromoter.
-     *
-     * @param nextPromoter The promoter to use when there are no more shortcuts.
-     *        May be {@code null}.
-     */
-    public ShortcutPromoter(Promoter nextPromoter) {
-        super(nextPromoter);
+    public ShortcutPromoter(Config config, Promoter next, SuggestionFilter filter) {
+        super(filter, next, config);
     }
 
     @Override
-    public void pickPromoted(SuggestionCursor shortcuts,
-            ArrayList<CorpusResult> suggestions, int maxPromoted,
+    public void doPickPromoted(Suggestions suggestions, int maxPromoted,
+            ListSuggestionCursor promoted) {
+        promoteShortcuts(suggestions.getShortcuts(), maxPromoted, promoted);
+    }
+
+    @VisibleForTesting
+    void promoteShortcuts(SuggestionCursor shortcuts, int maxPromoted,
             ListSuggestionCursor promoted) {
         int shortcutCount = shortcuts == null ? 0 : shortcuts.getCount();
-        int promotedShortcutCount = Math.min(shortcutCount, maxPromoted);
-        if (DBG) {
-            Log.d(TAG, "pickPromoted(shortcutCount = " + shortcutCount +
-                    ", maxPromoted = " + maxPromoted + ")");
+        if (shortcutCount == 0) return;
+        HashMultiset<Source> sourceShortcutCounts = HashMultiset.create(shortcutCount);
+        for (int i = 0; i < shortcutCount && promoted.getCount() < maxPromoted; i++) {
+            shortcuts.moveTo(i);
+            Source source = shortcuts.getSuggestionSource();
+            if (source != null && accept(shortcuts)) {
+                int prevCount = sourceShortcutCounts.add(source, 1);
+                int maxShortcuts = source.getMaxShortcuts(getConfig());
+                if (prevCount < maxShortcuts) {
+                    promoted.add(new SuggestionPosition(shortcuts));
+                }
+            }
         }
-
-        for (int i = 0; i < promotedShortcutCount; i++) {
-            promoted.add(new SuggestionPosition(shortcuts, i));
-        }
-
-        super.pickPromoted(null, suggestions, maxPromoted, promoted);
     }
 
 }

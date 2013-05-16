@@ -18,4 +18,6 @@
 
   <integer name="num_suggestions_above_keyboard">2</integer>
 
+  <integer name="corpus_selection_dialog_columns">3</integer>
+
 </resources>

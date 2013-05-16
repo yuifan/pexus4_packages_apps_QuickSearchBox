@@ -16,6 +16,8 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.NowOrLater;
+
 import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
@@ -32,6 +34,11 @@ public interface Source extends SuggestionCursorProvider<SourceResult> {
      * Gets the name activity that intents from this source are sent to.
      */
     ComponentName getIntentComponent();
+
+    /**
+     * Gets the suggestion URI for getting suggestions from this Source.
+     */
+    String getSuggestUri();
 
     /**
      * Gets the version code of the source. This is expected to change when the app that
@@ -69,7 +76,7 @@ public interface Source extends SuggestionCursorProvider<SourceResult> {
      *
      * @param drawableId Resource ID or URI.
      */
-    Drawable getIcon(String drawableId);
+    NowOrLater<Drawable> getIcon(String drawableId);
 
     /**
      * Gets the URI for an icon form this suggestion source.
@@ -111,9 +118,16 @@ public interface Source extends SuggestionCursorProvider<SourceResult> {
 
     boolean voiceSearchEnabled();
 
-    boolean isWebSuggestionSource();
+    /**
+     * Whether this source should be included in the blended All mode. The source must
+     * also be enabled to be included in All.
+     */
+    boolean includeInAll();
 
-    boolean isLocationAware();
+    /**
+     * Gets the maximum number of shortcuts that will be shown from this source.
+     */
+    int getMaxShortcuts(Config config);
 
     Intent createSearchIntent(String query, Bundle appData);
 
@@ -128,14 +142,13 @@ public interface Source extends SuggestionCursorProvider<SourceResult> {
      * Gets suggestions from this source.
      *
      * @param query The user query.
-     * @param queryLimit An advisory maximum number of results that the source should return.
      * @param onlySource Indicates if this is the only source being queried.
      * @return The suggestion results.
      */
     SourceResult getSuggestions(String query, int queryLimit, boolean onlySource);
 
     /**
-     * Updates a shorcut.
+     * Updates a shortcut.
      *
      * @param shortcutId The id of the shortcut to update.
      * @param extraData associated with this shortcut.
@@ -157,5 +170,11 @@ public interface Source extends SuggestionCursorProvider<SourceResult> {
      * @return The default intent data, or {@code null}.
      */
     String getDefaultIntentData();
+
+    /**
+     * Gets the root source, if this source is a wrapper around another. Otherwise, returns this
+     * source.
+     */
+    Source getRoot();
 
 }

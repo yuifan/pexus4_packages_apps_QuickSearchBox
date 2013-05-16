@@ -15,6 +15,8 @@
  */
 package com.android.quicksearchbox;
 
+import android.content.ComponentName;
+
 /**
  * Interface for individual suggestions.
  */
@@ -78,6 +80,11 @@ public interface Suggestion {
     String getSuggestionIntentAction();
 
     /**
+     * Gets the name of the activity that the intent for the current suggestion will be sent to.
+     */
+    ComponentName getSuggestionIntentComponent();
+
+    /**
      * Gets the extra data associated with this suggestion's intent.
      */
     String getSuggestionIntentExtraData();
@@ -108,5 +115,15 @@ public interface Suggestion {
      * Checks if this is a web search suggestion.
      */
     boolean isWebSearchSuggestion();
+
+    /**
+     * Checks whether this suggestion comes from the user's search history.
+     */
+    boolean isHistorySuggestion();
+
+    /**
+     * Returns any extras associated with this suggestion, or {@code null} if there are none.
+     */
+    SuggestionExtras getExtras();
 
 }

@@ -16,6 +16,11 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.CachedLater;
+import com.android.quicksearchbox.util.NamedTask;
+import com.android.quicksearchbox.util.NamedTaskExecutor;
+import com.android.quicksearchbox.util.Now;
+import com.android.quicksearchbox.util.NowOrLater;
 import com.android.quicksearchbox.util.Util;
 
 import android.content.ContentResolver;
@@ -25,6 +30,7 @@ import android.content.pm.PackageManager.NameNotFoundException;
 import android.content.res.Resources;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
+import android.os.Handler;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -49,6 +55,10 @@ public class PackageIconLoader implements IconLoader {
 
     private Context mPackageContext;
 
+    private final Handler mUiThread;
+
+    private final NamedTaskExecutor mIconLoaderExecutor;
+
     /**
      * Creates a new icon loader.
      *
@@ -57,9 +67,12 @@ public class PackageIconLoader implements IconLoader {
      *        Resource IDs without an explicit package will be resolved against the package
      *        of this context.
      */
-    public PackageIconLoader(Context context, String packageName) {
+    public PackageIconLoader(Context context, String packageName, Handler uiThread,
+            NamedTaskExecutor iconLoaderExecutor) {
         mContext = context;
         mPackageName = packageName;
+        mUiThread = uiThread;
+        mIconLoaderExecutor = iconLoaderExecutor;
     }
 
     private boolean ensurePackageContext() {
@@ -76,26 +89,36 @@ public class PackageIconLoader implements IconLoader {
         return true;
     }
 
-    public Drawable getIcon(String drawableId) {
+    public NowOrLater<Drawable> getIcon(final String drawableId) {
         if (DBG) Log.d(TAG, "getIcon(" + drawableId + ")");
         if (TextUtils.isEmpty(drawableId) || "0".equals(drawableId)) {
-            return null;
+            return new Now<Drawable>(null);
         }
-        if (!ensurePackageContext()) return null;
+        if (!ensurePackageContext()) {
+            return new Now<Drawable>(null);
+        }
+        NowOrLater<Drawable> drawable;
         try {
             // First, see if it's just an integer
             int resourceId = Integer.parseInt(drawableId);
             // If so, find it by resource ID
-            return mPackageContext.getResources().getDrawable(resourceId);
+            Drawable icon = mPackageContext.getResources().getDrawable(resourceId);
+            drawable = new Now<Drawable>(icon);
         } catch (NumberFormatException nfe) {
             // It's not an integer, use it as a URI
             Uri uri = Uri.parse(drawableId);
-            return getDrawable(uri);
+            if (ContentResolver.SCHEME_ANDROID_RESOURCE.equals(uri.getScheme())) {
+                // load all resources synchronously, to reduce UI flickering
+                drawable = new Now<Drawable>(getDrawable(uri));
+            } else {
+                drawable = new IconLaterTask(uri);
+            }
         } catch (Resources.NotFoundException nfe) {
             // It was an integer, but it couldn't be found, bail out
             Log.w(TAG, "Icon resource not found: " + drawableId);
-            return null;
+            drawable = new Now<Drawable>(null);
         }
+        return drawable;
     }
 
     public Uri getIconUri(String drawableId) {
@@ -196,5 +219,43 @@ public class PackageIconLoader implements IconLoader {
         res.r = r;
         res.id = id;
         return res;
+    }
+
+    private class IconLaterTask extends CachedLater<Drawable> implements NamedTask {
+        private final Uri mUri;
+
+        public IconLaterTask(Uri iconUri) {
+            mUri = iconUri;
+        }
+
+        @Override
+        protected void create() {
+            mIconLoaderExecutor.execute(this);
+        }
+
+        @Override
+        public void run() {
+            final Drawable icon = getIcon();
+            mUiThread.post(new Runnable(){
+                public void run() {
+                    store(icon);
+                }});
+        }
+
+        @Override
+        public String getName() {
+            return mPackageName;
+        }
+
+        private Drawable getIcon() {
+            try {
+                return getDrawable(mUri);
+            } catch (Throwable t) {
+                // we're making a call into another package, which could throw any exception.
+                // Make sure it doesn't crash QSB
+                Log.e(TAG, "Failed to load icon " + mUri, t);
+                return null;
+            }
+        }
     }
 }

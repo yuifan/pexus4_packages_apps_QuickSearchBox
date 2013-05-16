@@ -15,7 +15,10 @@
  */
 package com.android.quicksearchbox;
 
+import android.content.ComponentName;
 import android.database.Cursor;
+
+import java.util.Collection;
 
 public class CursorBackedSourceResult extends CursorBackedSuggestionCursor
         implements SourceResult {
@@ -40,13 +43,33 @@ public class CursorBackedSourceResult extends CursorBackedSuggestionCursor
         return mSource;
     }
 
+    @Override
+    public ComponentName getSuggestionIntentComponent() {
+        return mSource.getIntentComponent();
+    }
+
     public boolean isSuggestionShortcut() {
+        return false;
+    }
+
+    public boolean isHistorySuggestion() {
         return false;
     }
 
     @Override
     public String toString() {
         return mSource + "[" + getUserQuery() + "]";
+    }
+
+    @Override
+    public SuggestionExtras getExtras() {
+        if (mCursor == null) return null;
+        return CursorBackedSuggestionExtras.createExtrasIfNecessary(mCursor, getPosition());
+    }
+
+    public Collection<String> getExtraColumns() {
+        if (mCursor == null) return null;
+        return CursorBackedSuggestionExtras.getExtraColumns(mCursor);
     }
 
 }

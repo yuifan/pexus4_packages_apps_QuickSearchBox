@@ -16,7 +16,10 @@
 
 package com.android.quicksearchbox.google;
 
+import com.android.quicksearchbox.CursorBackedSourceResult;
 import com.android.quicksearchbox.QsbApplication;
+import com.android.quicksearchbox.Source;
+import com.android.quicksearchbox.SourceResult;
 import com.android.quicksearchbox.SuggestionCursorBackedCursor;
 
 import android.app.SearchManager;
@@ -26,12 +29,15 @@ import android.content.Context;
 import android.content.UriMatcher;
 import android.database.Cursor;
 import android.net.Uri;
+import android.util.Log;
 
 /**
  * A suggestion provider which provides content from Genie, a service that offers
  * a superset of the content provided by Google Suggest.
  */
 public class GoogleSuggestionProvider extends ContentProvider {
+    private static final boolean DBG = false;
+    private static final String TAG = "QSB.GoogleSuggestionProvider";
 
     // UriMatcher constants
     private static final int SEARCH_SUGGEST = 0;
@@ -57,15 +63,21 @@ public class GoogleSuggestionProvider extends ContentProvider {
         return SearchManager.SUGGEST_MIME_TYPE;
     }
 
+    private SourceResult emptyIfNull(SourceResult result, Source source, String query) {
+        return result == null ? new CursorBackedSourceResult(source, query) : result;
+    }
+
     @Override
     public Cursor query(Uri uri, String[] projection, String selection,
             String[] selectionArgs, String sortOrder) {
 
+        if (DBG) Log.d(TAG, "query uri=" + uri);
         int match = mUriMatcher.match(uri);
 
         if (match == SEARCH_SUGGEST) {
             String query = getQuery(uri);
-            return new SuggestionCursorBackedCursor(mSource.getSuggestionsExternal(query));
+            return new SuggestionCursorBackedCursor(
+                    emptyIfNull(mSource.queryExternal(query), mSource, query));
         } else if (match == SEARCH_SHORTCUT) {
             String shortcutId = getQuery(uri);
             String extraData =

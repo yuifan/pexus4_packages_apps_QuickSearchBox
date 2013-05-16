@@ -16,15 +16,16 @@
 
 package com.android.quicksearchbox.google;
 
+import com.android.quicksearchbox.Config;
 import com.android.quicksearchbox.R;
 import com.android.quicksearchbox.Source;
 import com.android.quicksearchbox.SourceResult;
 import com.android.quicksearchbox.SuggestionCursor;
+import com.android.quicksearchbox.util.NamedTaskExecutor;
 
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.DefaultHttpClient;
 import org.apache.http.params.HttpParams;
 import org.apache.http.params.HttpProtocolParams;
 import org.apache.http.util.EntityUtils;
@@ -34,8 +35,10 @@ import org.json.JSONException;
 import android.content.ComponentName;
 import android.content.Context;
 import android.net.ConnectivityManager;
+import android.net.http.AndroidHttpClient;
 import android.net.NetworkInfo;
 import android.os.Build;
+import android.os.Handler;
 import android.text.TextUtils;
 import android.util.Log;
 
@@ -47,26 +50,25 @@ import java.util.Locale;
 /**
  * Use network-based Google Suggests to provide search suggestions.
  */
-public class GoogleSuggestClient extends GoogleSource {
+public class GoogleSuggestClient extends AbstractGoogleSource {
 
     private static final boolean DBG = false;
     private static final String LOG_TAG = "GoogleSearch";
 
     private static final String USER_AGENT = "Android/" + Build.VERSION.RELEASE;
     private String mSuggestUri;
-    private static final int HTTP_TIMEOUT_MS = 1000;
 
     // TODO: this should be defined somewhere
-    private static final String HTTP_TIMEOUT = "http.connection-manager.timeout";
+    private static final String HTTP_TIMEOUT = "http.conn-manager.timeout";
 
     private final HttpClient mHttpClient;
 
-    public GoogleSuggestClient(Context context) {
-        super(context);
-        mHttpClient = new DefaultHttpClient();
+    public GoogleSuggestClient(Context context, Handler uiThread,
+            NamedTaskExecutor iconLoader, Config config) {
+        super(context, uiThread, iconLoader);
+        mHttpClient = AndroidHttpClient.newInstance(USER_AGENT, context);
         HttpParams params = mHttpClient.getParams();
-        HttpProtocolParams.setUserAgent(params, USER_AGENT);
-        params.setLongParameter(HTTP_TIMEOUT, HTTP_TIMEOUT_MS);
+        params.setLongParameter(HTTP_TIMEOUT, config.getHttpConnectTimeout());
 
         // NOTE:  Do not look up the resource here;  Localization changes may not have completed
         // yet (e.g. we may still be reading the SIM card).
@@ -76,11 +78,6 @@ public class GoogleSuggestClient extends GoogleSource {
     @Override
     public ComponentName getIntentComponent() {
         return new ComponentName(getContext(), GoogleSearch.class);
-    }
-
-    @Override
-    public boolean isLocationAware() {
-        return false;
     }
 
     @Override
@@ -107,35 +104,11 @@ public class GoogleSuggestClient extends GoogleSource {
         }
         try {
             query = URLEncoder.encode(query, "UTF-8");
-            // NOTE:  This code uses resources to optionally select the search Uri, based on the
-            // MCC value from the SIM.  iThe default string will most likely be fine.  It is
-            // paramerterized to accept info from the Locale, the language code is the first
-            // parameter (%1$s) and the country code is the second (%2$s).  This code *must*
-            // function in the same way as a similar lookup in
-            // com.android.browser.BrowserActivity#onCreate().  If you change
-            // either of these functions, change them both.  (The same is true for the underlying
-            // resource strings, which are stored in mcc-specific xml files.)
             if (mSuggestUri == null) {
                 Locale l = Locale.getDefault();
-                String language = l.getLanguage();
-                String country = l.getCountry().toLowerCase();
-                // Chinese and Portuguese have two langauge variants.
-                if ("zh".equals(language)) {
-                    if ("cn".equals(country)) {
-                        language = "zh-CN";
-                    } else if ("tw".equals(country)) {
-                        language = "zh-TW";
-                    }
-                } else if ("pt".equals(language)) {
-                    if ("br".equals(country)) {
-                        language = "pt-BR";
-                    } else if ("pt".equals(country)) {
-                        language = "pt-PT";
-                    }
-                }
+                String language = GoogleSearch.getLanguage(l);
                 mSuggestUri = getContext().getResources().getString(R.string.google_suggest_base,
-                                                                    language,
-                                                                    country);
+                                                                    language);
             }
 
             String suggestUri = mSuggestUri + query;

@@ -16,17 +16,21 @@
 
 package com.android.quicksearchbox.ui;
 
+import com.android.quicksearchbox.CorpusResult;
+import com.android.quicksearchbox.Promoter;
 import com.android.quicksearchbox.SuggestionCursor;
+import com.android.quicksearchbox.SuggestionPosition;
 import com.android.quicksearchbox.Suggestions;
 
 import android.database.DataSetObserver;
 import android.util.Log;
+import android.view.View.OnFocusChangeListener;
 
 /**
- * A {@link SuggestionsAdapter} that doesn't expose the new suggestions
+ * A {@link SuggestionsListAdapter} that doesn't expose the new suggestions
  * until there are some results to show.
  */
-public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
+public class DelayingSuggestionsAdapter<A> implements SuggestionsAdapter<A> {
 
     private static final boolean DBG = false;
     private static final String TAG = "QSB.DelayingSuggestionsAdapter";
@@ -35,26 +39,27 @@ public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
 
     private Suggestions mPendingSuggestions;
 
-    public DelayingSuggestionsAdapter(SuggestionViewFactory viewFactory) {
-        super(viewFactory);
+    private final SuggestionsAdapterBase<A> mDelayedAdapter;
+
+    public DelayingSuggestionsAdapter(SuggestionsAdapterBase<A> delayed) {
+        mDelayedAdapter = delayed;
     }
 
-    @Override
     public void close() {
         setPendingSuggestions(null);
-        super.close();
+        mDelayedAdapter.close();
     }
 
     @Override
     public void setSuggestions(Suggestions suggestions) {
         if (suggestions == null) {
-            super.setSuggestions(null);
+            mDelayedAdapter.setSuggestions(null);
             setPendingSuggestions(null);
             return;
         }
         if (shouldPublish(suggestions)) {
             if (DBG) Log.d(TAG, "Publishing suggestions immediately: " + suggestions);
-            super.setSuggestions(suggestions);
+            mDelayedAdapter.setSuggestions(suggestions);
             // Clear any old pending suggestions.
             setPendingSuggestions(null);
         } else {
@@ -68,17 +73,27 @@ public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
      */
     private boolean shouldPublish(Suggestions suggestions) {
         if (suggestions.isDone()) return true;
-        SuggestionCursor cursor = getCorpusCursor(suggestions, getCorpus());
-        return cursor != null && cursor.getCount() > 0;
+        SuggestionCursor cursor = mDelayedAdapter.getPromoted(suggestions);
+        if (cursor != null && cursor.getCount() > 0) {
+            return true;
+        } else if (mDelayedAdapter.willPublishNonPromotedSuggestions()) {
+            Iterable<CorpusResult> results = suggestions.getCorpusResults();
+            for (CorpusResult result : results) {
+                if (result.getCount() > 0) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void setPendingSuggestions(Suggestions suggestions) {
         if (mPendingSuggestions == suggestions) {
             return;
         }
-        if (isClosed()) {
+        if (mDelayedAdapter.isClosed()) {
             if (suggestions != null) {
-                suggestions.close();
+                suggestions.release();
             }
             return;
         }
@@ -90,7 +105,7 @@ public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
             // Close old suggestions, but only if they are not also the current
             // suggestions.
             if (mPendingSuggestions != getSuggestions()) {
-                mPendingSuggestions.close();
+                mPendingSuggestions.release();
             }
         }
         mPendingSuggestions = suggestions;
@@ -106,7 +121,7 @@ public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
         }
         if (shouldPublish(mPendingSuggestions)) {
             if (DBG) Log.d(TAG, "Suggestions now available, publishing: " + mPendingSuggestions);
-            super.setSuggestions(mPendingSuggestions);
+            mDelayedAdapter.setSuggestions(mPendingSuggestions);
             // The suggestions are no longer pending.
             setPendingSuggestions(null);
         }
@@ -117,6 +132,60 @@ public class DelayingSuggestionsAdapter extends SuggestionsAdapter {
         public void onChanged() {
             onPendingSuggestionsChanged();
         }
+    }
+
+    public A getListAdapter() {
+        return mDelayedAdapter.getListAdapter();
+    }
+
+    public SuggestionCursor getCurrentPromotedSuggestions() {
+        return mDelayedAdapter.getCurrentPromotedSuggestions();
+    }
+
+    public Suggestions getSuggestions() {
+        return mDelayedAdapter.getSuggestions();
+    }
+
+    public SuggestionPosition getSuggestion(long suggestionId) {
+        return mDelayedAdapter.getSuggestion(suggestionId);
+    }
+
+    public void onSuggestionClicked(long suggestionId) {
+        mDelayedAdapter.onSuggestionClicked(suggestionId);
+    }
+
+    public void onSuggestionQueryRefineClicked(long suggestionId) {
+        mDelayedAdapter.onSuggestionQueryRefineClicked(suggestionId);
+    }
+
+    public void onSuggestionQuickContactClicked(long suggestionId) {
+        mDelayedAdapter.onSuggestionQuickContactClicked(suggestionId);
+    }
+
+    public void onSuggestionRemoveFromHistoryClicked(long suggestionId) {
+        mDelayedAdapter.onSuggestionRemoveFromHistoryClicked(suggestionId);
+    }
+
+    public void setMaxPromoted(int maxPromoted) {
+        mDelayedAdapter.setMaxPromoted(maxPromoted);
+    }
+
+    public void setOnFocusChangeListener(OnFocusChangeListener l) {
+        mDelayedAdapter.setOnFocusChangeListener(l);
+    }
+
+    @Override
+    public void setPromoter(Promoter promoter) {
+        mDelayedAdapter.setPromoter(promoter);
+    }
+
+    public void setSuggestionClickListener(SuggestionClickListener listener) {
+        mDelayedAdapter.setSuggestionClickListener(listener);
+    }
+
+    @Override
+    public boolean isEmpty() {
+        return mDelayedAdapter.isEmpty();
     }
 
 }

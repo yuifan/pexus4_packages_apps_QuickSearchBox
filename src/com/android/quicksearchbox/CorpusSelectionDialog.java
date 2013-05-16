@@ -17,7 +17,6 @@
 package com.android.quicksearchbox;
 
 import com.android.quicksearchbox.ui.CorporaAdapter;
-import com.android.quicksearchbox.ui.CorpusViewFactory;
 
 import android.app.Dialog;
 import android.content.Context;
@@ -33,7 +32,6 @@ import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.GridView;
 import android.widget.ImageView;
-import android.widget.TextView;
 
 /**
  * Corpus selection dialog.
@@ -42,6 +40,8 @@ public class CorpusSelectionDialog extends Dialog {
 
     private static final boolean DBG = false;
     private static final String TAG = "QSB.SelectSearchSourceDialog";
+
+    private final SearchSettings mSettings;
 
     private GridView mCorpusGrid;
 
@@ -53,8 +53,13 @@ public class CorpusSelectionDialog extends Dialog {
 
     private CorporaAdapter mAdapter;
 
-    public CorpusSelectionDialog(Context context) {
+    public CorpusSelectionDialog(Context context, SearchSettings settings) {
         super(context, R.style.Theme_SelectSearchSource);
+        mSettings = settings;
+    }
+
+    protected SearchSettings getSettings() {
+        return mSettings;
     }
 
     /**
@@ -96,8 +101,10 @@ public class CorpusSelectionDialog extends Dialog {
     @Override
     protected void onStart() {
         super.onStart();
+        Corpora corpora = getQsbApplication().getCorpora();
         CorporaAdapter adapter =
-                CorporaAdapter.createGridAdapter(getViewFactory(), getCorpusRanker());
+                new CorporaAdapter(getContext(), corpora, R.layout.corpus_grid_item);
+        adapter.setCurrentCorpus(mCorpus);
         setAdapter(adapter);
         mCorpusGrid.setSelection(adapter.getCorpusPosition(mCorpus));
     }
@@ -109,9 +116,9 @@ public class CorpusSelectionDialog extends Dialog {
     }
 
     @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        super.onCreateOptionsMenu(menu);
-        SearchSettings.addSearchSettingsMenuItem(getContext(), menu);
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        menu.clear();
+        getSettings().addMenuItems(menu, true);
         return true;
     }
 
@@ -171,14 +178,6 @@ public class CorpusSelectionDialog extends Dialog {
         return QsbApplication.get(getContext());
     }
 
-    private CorpusRanker getCorpusRanker() {
-        return getQsbApplication().getCorpusRanker();
-    }
-
-    private CorpusViewFactory getViewFactory() {
-        return getQsbApplication().getCorpusViewFactory();
-    }
-
     protected void selectCorpus(Corpus corpus) {
         dismiss();
         if (mListener != null) {
@@ -197,7 +196,7 @@ public class CorpusSelectionDialog extends Dialog {
 
     private class CorpusEditListener implements View.OnClickListener {
         public void onClick(View v) {
-            Intent intent = SearchSettings.getSearchableItemsIntent(getContext());
+            Intent intent = getSettings().getSearchableItemsIntent();
             getContext().startActivity(intent);
         }
     }

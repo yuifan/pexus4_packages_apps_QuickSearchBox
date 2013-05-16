@@ -40,6 +40,7 @@ public class SearchableCorpora implements Corpora {
     private final DataSetObservable mDataSetObservable = new DataSetObservable();
 
     private final Context mContext;
+    private final SearchSettings mSettings;
     private final CorpusFactory mCorpusFactory;
 
     private Sources mSources;
@@ -56,8 +57,10 @@ public class SearchableCorpora implements Corpora {
      *
      * @param context Used for looking up source information etc.
      */
-    public SearchableCorpora(Context context, Sources sources, CorpusFactory corpusFactory) {
+    public SearchableCorpora(Context context, SearchSettings settings, Sources sources,
+            CorpusFactory corpusFactory) {
         mContext = context;
+        mSettings = settings;
         mCorpusFactory = corpusFactory;
         mSources = sources;
     }
@@ -70,8 +73,18 @@ public class SearchableCorpora implements Corpora {
         return Collections.unmodifiableCollection(mCorporaByName.values());
     }
 
-    public Collection<Corpus> getEnabledCorpora() {
+    public List<Corpus> getEnabledCorpora() {
         return mEnabledCorpora;
+    }
+
+    public List<Corpus> getCorporaInAll() {
+        ArrayList<Corpus> corpora = new ArrayList<Corpus>(mEnabledCorpora.size());
+        for (Corpus corpus : mEnabledCorpora) {
+            if (corpus.includeInAll()) {
+                corpora.add(corpus);
+            }
+        }
+        return corpora;
     }
 
     public Corpus getCorpus(String name) {
@@ -109,7 +122,7 @@ public class SearchableCorpora implements Corpora {
             for (Source source : corpus.getSources()) {
                 mCorporaBySource.put(source, corpus);
             }
-            if (corpus.isCorpusEnabled()) {
+            if (mSettings.isCorpusEnabled(corpus)) {
                 mEnabledCorpora.add(corpus);
             }
             if (corpus.isWebCorpus()) {

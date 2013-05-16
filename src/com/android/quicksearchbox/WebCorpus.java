@@ -24,6 +24,7 @@ import android.content.Intent;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Log;
 import android.util.Patterns;
 import android.webkit.URLUtil;
 
@@ -35,18 +36,35 @@ import java.util.concurrent.Executor;
  * The web search source.
  */
 public class WebCorpus extends MultiSourceCorpus {
+    private static final String TAG = "QSB.WebCorpus";
+    private static final boolean DBG = false;
 
     private static final String WEB_CORPUS_NAME = "web";
 
-    private final Source mWebSearchSource;
+    private final SearchSettings mSettings;
+
+    private Source mWebSearchSource;
 
     private final Source mBrowserSource;
 
-    public WebCorpus(Context context, Config config, Executor executor,
+    public WebCorpus(Context context, Config config, SearchSettings settings, Executor executor,
             Source webSearchSource, Source browserSource) {
         super(context, config, executor, webSearchSource, browserSource);
+        if (DBG) {
+            Log.d(TAG, "init webSource=" + webSearchSource + "; browser source = " + browserSource);
+        }
+        mSettings = settings;
         mWebSearchSource = webSearchSource;
         mBrowserSource = browserSource;
+    }
+
+    protected SearchSettings getSettings() {
+        return mSettings;
+    }
+
+    public void setWebSource(Source web) {
+        if (DBG) Log.d(TAG, "setWebSource(" + web + ")");
+        mWebSearchSource = web;
     }
 
     public CharSequence getLabel() {
@@ -82,25 +100,9 @@ public class WebCorpus extends MultiSourceCorpus {
         return intent;
     }
 
-    public SuggestionData createSearchShortcut(String query) {
-        SuggestionData shortcut = new SuggestionData(mWebSearchSource);
-        if (isUrl(query)) {
-            shortcut.setIntentAction(Intent.ACTION_VIEW);
-            shortcut.setIcon1(String.valueOf(R.drawable.globe));
-            shortcut.setText1(query);
-            // Set query so that trackball selection works
-            shortcut.setSuggestionQuery(query);
-            shortcut.setIntentData(URLUtil.guessUrl(query));
-        } else {
-            shortcut.setIntentAction(Intent.ACTION_WEB_SEARCH);
-            shortcut.setIcon1(String.valueOf(R.drawable.magnifying_glass));
-            shortcut.setText1(query);
-            shortcut.setSuggestionQuery(query);
-        }
-        return shortcut;
-    }
-
     public Intent createVoiceSearchIntent(Bundle appData) {
+        // TODO in 2-pane mode, mWebSearchSource may be NULL
+        // this functionality should be moved elsewhere.
         if (mWebSearchSource != null){
             return mWebSearchSource.createVoiceSearchIntent(appData);
         } else {
@@ -150,13 +152,11 @@ public class WebCorpus extends MultiSourceCorpus {
     @Override
     protected List<Source> getSourcesToQuery(String query, boolean onlyCorpus) {
         ArrayList<Source> sourcesToQuery = new ArrayList<Source>(2);
-        if (mWebSearchSource != null
-                && SearchSettings.getShowWebSuggestions(getContext())) {
-            sourcesToQuery.add(mWebSearchSource);
-        }
+        if (mWebSearchSource != null) sourcesToQuery.add(mWebSearchSource);
         if (mBrowserSource != null && query.length() > 0) {
             sourcesToQuery.add(mBrowserSource);
         }
+        if (DBG) Log.d(TAG, "getSourcesToQuery sourcesToQuery=" + sourcesToQuery);
         return sourcesToQuery;
     }
 

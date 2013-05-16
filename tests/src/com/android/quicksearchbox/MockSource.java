@@ -16,6 +16,10 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.ui.SuggestionViewFactory;
+import com.android.quicksearchbox.util.Now;
+import com.android.quicksearchbox.util.NowOrLater;
+
 import android.content.ComponentName;
 import android.content.Intent;
 import android.graphics.drawable.Drawable;
@@ -36,8 +40,16 @@ public class MockSource implements Source {
 
     public static final MockSource WEB_SOURCE = new MockSource("WEB") {
         @Override
-        public boolean isWebSuggestionSource() {
-            return true;
+        public SuggestionData createSuggestion(String query) {
+            return new SuggestionData(this)
+                    .setText1(query)
+                    .setIntentAction(Intent.ACTION_WEB_SEARCH)
+                    .setSuggestionQuery(query);
+        }
+
+        @Override
+        public int getMaxShortcuts(Config config) {
+            return config.getMaxShortcutsPerWebSource();
         }
     };
 
@@ -60,6 +72,10 @@ public class MockSource implements Source {
                 getClass().getName() + "." + mName);
     }
 
+    public String getSuggestUri() {
+        return null;
+    }
+
     public int getVersionCode() {
         return mVersionCode;
     }
@@ -80,8 +96,9 @@ public class MockSource implements Source {
         return null;
     }
 
-    public Drawable getIcon(String drawableId) {
-        return null;
+    @Override
+    public NowOrLater<Drawable> getIcon(String drawableId) {
+        return new Now<Drawable>(null);
     }
 
     public Uri getIconUri(String drawableId) {
@@ -116,10 +133,6 @@ public class MockSource implements Source {
         return true;
     }
 
-    public boolean isLocationAware() {
-        return false;
-    }
-
     public SourceResult getSuggestions(String query, int queryLimit, boolean onlySource) {
         if (query.length() == 0) {
             return null;
@@ -130,7 +143,7 @@ public class MockSource implements Source {
         return new Result(query, cursor);
     }
 
-    public Suggestion createSuggestion(String query) {
+    public SuggestionData createSuggestion(String query) {
         Uri data = new Uri.Builder().scheme("content").authority(mName).path(query).build();
         return new SuggestionData(this)
                 .setText1(query)
@@ -177,8 +190,8 @@ public class MockSource implements Source {
         return false;
     }
 
-    public boolean isWebSuggestionSource() {
-        return false;
+    public int getMaxShortcuts(Config config) {
+        return config.getMaxShortcutsPerNonWebSource();
     }
 
     public boolean queryAfterZeroResults() {
@@ -189,16 +202,20 @@ public class MockSource implements Source {
         return null;
     }
 
-    public SuggestionData createSearchShortcut(String query) {
-        return null;
-    }
-
     public Intent createVoiceSearchIntent(Bundle appData) {
         return null;
     }
 
     public boolean voiceSearchEnabled() {
         return false;
+    }
+
+    public boolean includeInAll() {
+        return true;
+    }
+
+    public Source getRoot() {
+        return this;
     }
 
 }

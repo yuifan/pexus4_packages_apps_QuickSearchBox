@@ -16,78 +16,143 @@
 
 package com.android.quicksearchbox;
 
+import com.google.common.annotations.VisibleForTesting;
+
 import android.util.Log;
 
-import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.LinkedList;
 
 /**
  * A promoter that gives preference to suggestions from higher ranking corpora.
  */
-public class RankAwarePromoter implements Promoter {
+public class RankAwarePromoter extends AbstractPromoter {
 
     private static final boolean DBG = false;
     private static final String TAG = "QSB.RankAwarePromoter";
 
-    private final Config mConfig;
-    private final Corpora mCorpora;
-
-    public RankAwarePromoter(Config config, Corpora corpora) {
-        mConfig = config;
-        mCorpora = corpora;
+    public RankAwarePromoter(Config config, SuggestionFilter filter, Promoter next) {
+        super(filter, next, config);
     }
 
-    public void pickPromoted(SuggestionCursor shortcuts, ArrayList<CorpusResult> suggestions,
+    @Override
+    public void doPickPromoted(Suggestions suggestions,
             int maxPromoted, ListSuggestionCursor promoted) {
+        promoteSuggestions(suggestions.getCorpusResults(), maxPromoted, promoted);
+    }
 
+    @VisibleForTesting
+    void promoteSuggestions(Iterable<CorpusResult> suggestions, int maxPromoted,
+            ListSuggestionCursor promoted) {
         if (DBG) Log.d(TAG, "Available results: " + suggestions);
 
-        // Split non-empty results into default sources and other, positioned at first suggestion
-        LinkedList<CorpusResult> defaultResults = new LinkedList<CorpusResult>();
-        LinkedList<CorpusResult> otherResults = new LinkedList<CorpusResult>();
-        for (CorpusResult result : suggestions) {
-            if (result.getCount() > 0) {
-                result.moveTo(0);
-                Corpus corpus = result.getCorpus();
-                if (corpus == null || corpus.isCorpusDefaultEnabled()) {
-                    defaultResults.add(result);
-                } else {
-                    otherResults.add(result);
-                }
-            }
-        }
+        // Split non-empty results into important suggestions and not-so-important
+        // suggestions, each corpus's cursor positioned at the first suggestion.
+        LinkedList<CorpusResult> highRankingSuggestions = new LinkedList<CorpusResult>();
+        LinkedList<CorpusResult> lowRankingSuggestions = new LinkedList<CorpusResult>();
+        partitionSuggestionsByRank(suggestions, highRankingSuggestions, lowRankingSuggestions);
 
-        // Share the top slots equally among each of the default corpora
-        if (maxPromoted > 0 && !defaultResults.isEmpty()) {
-            int slotsToFill = Math.min(getSlotsAboveKeyboard() - promoted.getCount(), maxPromoted);
-            if (slotsToFill > 0) {
-                int stripeSize = Math.max(1, slotsToFill / defaultResults.size());
-                maxPromoted -= roundRobin(defaultResults, slotsToFill, stripeSize, promoted);
-            }
-        }
+        // Top results, evenly distributed between each high-ranking corpus.
+        promoteTopSuggestions(highRankingSuggestions, promoted, maxPromoted);
 
-        // Then try to fill with the remaining promoted results
-        if (maxPromoted > 0 && !defaultResults.isEmpty()) {
-            int stripeSize = Math.max(1, maxPromoted / defaultResults.size());
-            maxPromoted -= roundRobin(defaultResults, maxPromoted, stripeSize, promoted);
-            // We may still have a few slots left
-            maxPromoted -= roundRobin(defaultResults, maxPromoted, maxPromoted, promoted);
-        }
-
-        // Then try to fill with the rest
-        if (maxPromoted > 0 && !otherResults.isEmpty()) {
-            int stripeSize = Math.max(1, maxPromoted / otherResults.size());
-            maxPromoted -= roundRobin(otherResults, maxPromoted, stripeSize, promoted);
-            // We may still have a few slots left
-            maxPromoted -= roundRobin(otherResults, maxPromoted, maxPromoted, promoted);
-        }
+        // Then try to fill promoted list with the remaining high-ranking suggestions,
+        // and then use the low-ranking suggestions if the list isn't full yet.
+        promoteEquallyFromEachCorpus(highRankingSuggestions, promoted, maxPromoted);
+        promoteEquallyFromEachCorpus(lowRankingSuggestions, promoted, maxPromoted);
 
         if (DBG) Log.d(TAG, "Returning " + promoted.toString());
     }
 
+    /**
+     * Shares the top slots evenly among each of the high-ranking (default) corpora.
+     *
+     * The corpora will appear in the promoted list in the order they are listed
+     * among the incoming suggestions (this method doesn't change their order).
+     */
+    private void promoteTopSuggestions(LinkedList<CorpusResult> highRankingSuggestions,
+            ListSuggestionCursor promoted, int maxPromoted) {
+
+        int slotsLeft = getSlotsLeft(promoted, maxPromoted);
+        if (slotsLeft > 0 && !highRankingSuggestions.isEmpty()) {
+            int slotsToFill = Math.min(getSlotsAboveKeyboard() - promoted.getCount(), slotsLeft);
+
+            if (slotsToFill > 0) {
+                int stripeSize = Math.max(1, slotsToFill / highRankingSuggestions.size());
+                roundRobin(highRankingSuggestions, slotsToFill, stripeSize, promoted);
+            }
+        }
+    }
+
+    /**
+     * Tries to promote the same number of elements from each corpus.
+     *
+     * The corpora will appear in the promoted list in the order they are listed
+     * among the incoming suggestions (this method doesn't change their order).
+     */
+    private void promoteEquallyFromEachCorpus(LinkedList<CorpusResult> suggestions,
+            ListSuggestionCursor promoted, int maxPromoted) {
+
+        int slotsLeft = getSlotsLeft(promoted, maxPromoted);
+        if (slotsLeft == 0) {
+            // No more items to add.
+            return;
+        }
+
+        if (suggestions.isEmpty()) {
+            return;
+        }
+
+        int stripeSize = Math.max(1, slotsLeft / suggestions.size());
+        roundRobin(suggestions, slotsLeft, stripeSize, promoted);
+
+        // We may still have a few slots left
+        slotsLeft = getSlotsLeft(promoted, maxPromoted);
+        roundRobin(suggestions, slotsLeft, slotsLeft, promoted);
+    }
+
+    /**
+     * Partitions the suggestions into "important" (high-ranking)
+     * and "not-so-important" (low-ranking) suggestions, dependent on the
+     * rank of the corpus the result is part of.
+     *
+     * @param suggestions
+     * @param highRankingSuggestions These should be displayed first to the
+     *     user.
+     * @param lowRankingSuggestions These should be displayed if the
+     *     high-ranking suggestions don't fill all the available space in the
+     *     result view.
+     */
+    private void partitionSuggestionsByRank(Iterable<CorpusResult> suggestions,
+            LinkedList<CorpusResult> highRankingSuggestions,
+            LinkedList<CorpusResult> lowRankingSuggestions) {
+
+        for (CorpusResult result : suggestions) {
+            if (result.getCount() > 0) {
+                result.moveTo(0);
+                Corpus corpus = result.getCorpus();
+                if (isCorpusHighlyRanked(corpus)) {
+                    highRankingSuggestions.add(result);
+                } else {
+                    lowRankingSuggestions.add(result);
+                }
+            }
+        }
+    }
+
+    private boolean isCorpusHighlyRanked(Corpus corpus) {
+        // The default corpora shipped with QSB (apps, etc.) are
+        // more important than ones that were registered later.
+        return corpus == null || corpus.isCorpusDefaultEnabled();
+    }
+
+    private int getSlotsLeft(ListSuggestionCursor promoted, int maxPromoted) {
+        // It's best to calculate this after each addition because duplicates
+        // may get filtered out automatically in the list of promoted items.
+        return Math.max(0, maxPromoted - promoted.getCount());
+    }
+
     private int getSlotsAboveKeyboard() {
-        return mConfig.getNumSuggestionsAboveKeyboard();
+        return getConfig().getNumSuggestionsAboveKeyboard();
     }
 
     /**
@@ -128,11 +193,16 @@ public class RankAwarePromoter implements Promoter {
         if (count < 1 || cursor.getPosition() >= cursor.getCount()) {
             return 0;
         }
-        int i = 0;
+        int addedCount = 0;
         do {
-            promoted.add(new SuggestionPosition(cursor));
-            i++;
-        } while (cursor.moveToNext() && i < count);
-        return i;
+            if (accept(cursor)) {
+                if (promoted.add(new SuggestionPosition(cursor))) {
+                    // Added successfully (wasn't already promoted).
+                    addedCount++;
+                }
+            }
+        } while (cursor.moveToNext() && addedCount < count);
+        return addedCount;
     }
+
 }

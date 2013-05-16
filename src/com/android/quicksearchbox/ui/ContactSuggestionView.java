@@ -17,10 +17,15 @@
 package com.android.quicksearchbox.ui;
 
 import com.android.quicksearchbox.R;
-import com.android.quicksearchbox.SuggestionCursor;
+import com.android.quicksearchbox.SearchableSource;
+import com.android.quicksearchbox.Source;
+import com.android.quicksearchbox.Suggestion;
 
+import android.app.SearchableInfo;
 import android.content.Context;
 import android.net.Uri;
+import android.provider.ContactsContract;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.View;
 
@@ -28,6 +33,8 @@ import android.view.View;
  * View for contacts appearing in the suggestions list.
  */
 public class ContactSuggestionView extends DefaultSuggestionView {
+
+    private static final String VIEW_ID = "contact";
 
     private ContactBadge mQuickContact;
 
@@ -50,15 +57,35 @@ public class ContactSuggestionView extends DefaultSuggestionView {
     }
 
     @Override
-    public void bindAsSuggestion(SuggestionCursor suggestion, SuggestionClickListener onClick) {
-        super.bindAsSuggestion(suggestion, onClick);
+    public void bindAsSuggestion(Suggestion suggestion, String userQuery) {
+        super.bindAsSuggestion(suggestion, userQuery);
         mQuickContact.assignContactUri(Uri.parse(suggestion.getSuggestionIntentDataString()));
         mQuickContact.setExtraOnClickListener(new ContactBadgeClickListener());
     }
 
     private class ContactBadgeClickListener implements View.OnClickListener {
         public void onClick(View v) {
-            fireOnSuggestionQuickContactClicked();
+            onSuggestionQuickContactClicked();
+        }
+    }
+
+    public static class Factory extends SuggestionViewInflater {
+        public Factory(Context context) {
+            super(VIEW_ID, ContactSuggestionView.class, R.layout.contact_suggestion, context);
+        }
+
+        @Override
+        public boolean canCreateView(Suggestion suggestion) {
+            Source source = suggestion.getSuggestionSource();
+            if (source instanceof SearchableSource) {
+                SearchableSource searchableSource = (SearchableSource) source;
+                return isSearchableContacts(searchableSource.getSearchableInfo());
+            }
+            return false;
+        }
+
+        protected boolean isSearchableContacts(SearchableInfo searchable) {
+            return TextUtils.equals(ContactsContract.AUTHORITY, searchable.getSuggestAuthority());
         }
     }
 }

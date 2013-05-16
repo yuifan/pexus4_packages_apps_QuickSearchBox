@@ -19,13 +19,12 @@ package com.android.quicksearchbox;
 import com.android.quicksearchbox.util.BatchingNamedTaskExecutor;
 import com.android.quicksearchbox.util.Consumer;
 import com.android.quicksearchbox.util.NamedTaskExecutor;
+import com.android.quicksearchbox.util.NoOpConsumer;
 
 import android.os.Handler;
 import android.util.Log;
 
 import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
 
 /**
@@ -45,17 +44,7 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
 
     private final Handler mPublishThread;
 
-    private Promoter mAllPromoter;
-
-    private Promoter mSingleCorpusPromoter;
-
-    private final ShortcutRepository mShortcutRepo;
-
-    private final ShouldQueryStrategy mShouldQueryStrategy = new ShouldQueryStrategy();
-
-    private final Corpora mCorpora;
-
-    private final CorpusRanker mCorpusRanker;
+    private final ShouldQueryStrategy mShouldQueryStrategy;
 
     private final Logger mLogger;
 
@@ -64,31 +53,12 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
     public SuggestionsProviderImpl(Config config,
             NamedTaskExecutor queryExecutor,
             Handler publishThread,
-            ShortcutRepository shortcutRepo,
-            Corpora corpora,
-            CorpusRanker corpusRanker,
             Logger logger) {
         mConfig = config;
         mQueryExecutor = queryExecutor;
         mPublishThread = publishThread;
-        mShortcutRepo = shortcutRepo;
-        mCorpora = corpora;
-        mCorpusRanker = corpusRanker;
         mLogger = logger;
-    }
-
-    /**
-     * Sets the promoter used in All mode.
-     */
-    public void setAllPromoter(Promoter promoter) {
-        mAllPromoter = promoter;
-    }
-
-    /**
-     * Sets the promoter used in single corpus mode.
-     */
-    public void setSingleCorpusPromoter(Promoter promoter) {
-        mSingleCorpusPromoter = promoter;
+        mShouldQueryStrategy = new ShouldQueryStrategy(mConfig);
     }
 
     public void close() {
@@ -105,26 +75,14 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
         }
     }
 
-    protected ShortcutCursor getShortcutsForQuery(String query, Corpus singleCorpus) {
-        if (mShortcutRepo == null) return null;
-        Collection<Corpus> allowedCorpora;
-        if (singleCorpus == null) {
-            allowedCorpora = mCorpora.getEnabledCorpora();
-        } else {
-            allowedCorpora = Collections.singletonList(singleCorpus);
-        }
-        return mShortcutRepo.getShortcutsForQuery(query, allowedCorpora);
-    }
-
     /**
      * Gets the sources that should be queried for the given query.
      */
-    private List<Corpus> getCorporaToQuery(String query, Corpus singleCorpus) {
-        if (singleCorpus != null) return Collections.singletonList(singleCorpus);
-        List<Corpus> orderedCorpora = mCorpusRanker.getRankedCorpora();
-        if (DBG) Log.d(TAG, "getCorporaToQuery query='"+query+"' orderedCorpora="+orderedCorpora);
-        ArrayList<Corpus> corporaToQuery = new ArrayList<Corpus>(orderedCorpora.size());
-        for (Corpus corpus : orderedCorpora) {
+    private List<Corpus> filterCorpora(String query, List<Corpus> corpora) {
+        // If there is only one corpus, always query it
+        if (corpora.size() <= 1) return corpora;
+        ArrayList<Corpus> corporaToQuery = new ArrayList<Corpus>(corpora.size());
+        for (Corpus corpus : corpora) {
             if (shouldQueryCorpus(corpus, query)) {
                 if (DBG) Log.d(TAG, "should query corpus " + corpus);
                 corporaToQuery.add(corpus);
@@ -137,10 +95,6 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
     }
 
     protected boolean shouldQueryCorpus(Corpus corpus, String query) {
-        if (query.length() == 0 && !corpus.isWebCorpus()) {
-            // Only the web corpus sees zero length queries.
-            return false;
-        }
         return mShouldQueryStrategy.shouldQueryCorpus(corpus, query);
     }
 
@@ -151,19 +105,11 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
         }
     }
 
-    public Suggestions getSuggestions(String query, Corpus singleCorpus, int maxSuggestions) {
+    public Suggestions getSuggestions(String query, List<Corpus> corporaToQuery) {
         if (DBG) Log.d(TAG, "getSuggestions(" + query + ")");
-        cancelPendingTasks();
-        List<Corpus> corporaToQuery = getCorporaToQuery(query, singleCorpus);
-        Promoter promoter = singleCorpus == null ? mAllPromoter : mSingleCorpusPromoter;
-        final Suggestions suggestions = new Suggestions(promoter,
-                maxSuggestions,
-                query,
-                corporaToQuery);
-        ShortcutCursor shortcuts = getShortcutsForQuery(query, singleCorpus);
-        if (shortcuts != null) {
-            suggestions.setShortcuts(shortcuts);
-        }
+        corporaToQuery = filterCorpora(query, corporaToQuery);
+        final Suggestions suggestions = new Suggestions(query, corporaToQuery);
+        Log.i(TAG, "chars:" + query.length() + ",corpora:" + corporaToQuery);
 
         // Fast path for the zero sources case
         if (corporaToQuery.size() == 0) {
@@ -178,13 +124,20 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
         mBatchingExecutor = new BatchingNamedTaskExecutor(mQueryExecutor);
 
         long publishResultDelayMillis = mConfig.getPublishResultDelayMillis();
-        SuggestionCursorReceiver receiver = new SuggestionCursorReceiver(
-                mBatchingExecutor, suggestions, initialBatchSize,
-                publishResultDelayMillis);
+
+        Consumer<CorpusResult> receiver;
+        if (shouldDisplayResults(query)) {
+            receiver = new SuggestionCursorReceiver(
+                    mBatchingExecutor, suggestions, initialBatchSize,
+                    publishResultDelayMillis);
+        } else {
+            receiver = new NoOpConsumer<CorpusResult>();
+            suggestions.done();
+        }
 
         int maxResultsPerSource = mConfig.getMaxResultsPerSource();
         QueryTask.startQueries(query, maxResultsPerSource, corporaToQuery, mBatchingExecutor,
-                mPublishThread, receiver, singleCorpus != null);
+                mPublishThread, receiver, corporaToQuery.size() == 1);
         mBatchingExecutor.executeNextBatch(initialBatchSize);
 
         return suggestions;
@@ -199,6 +152,17 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
         }
         return count;
     }
+
+    private boolean shouldDisplayResults(String query) {
+        if (query.length() == 0 && !mConfig.showSuggestionsForZeroQuery()) {
+            // Note that even though we don't display such results, it's
+            // useful to run the query itself because it warms up the network
+            // connection.
+            return false;
+        }
+        return true;
+    }
+
 
     private class SuggestionCursorReceiver implements Consumer<CorpusResult> {
         private final BatchingNamedTaskExecutor mExecutor;
@@ -225,6 +189,10 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
         }
 
         public boolean consume(CorpusResult cursor) {
+            if (DBG) {
+                Log.d(TAG, "SuggestionCursorReceiver.consume(" + cursor + ") corpus=" +
+                        cursor.getCorpus() + " count = " + cursor.getCount());
+            }
             updateShouldQueryStrategy(cursor);
             mPendingResults.add(cursor);
             if (mResultPublishDelayMillis > 0
@@ -257,15 +225,11 @@ public class SuggestionsProviderImpl implements SuggestionsProvider {
 
         private void executeNextBatchIfNeeded() {
             if (mSuggestions.getResultCount() == mCountAtWhichToExecuteNextBatch) {
-                // We've just finished one batch
-                if (mSuggestions.getPromoted().getCount() < mConfig.getMaxPromotedSuggestions()) {
-                    // But we still don't have enough results, ask for more
-                    int nextBatchSize = mConfig.getNumPromotedSources();
-                    mCountAtWhichToExecuteNextBatch += nextBatchSize;
-                    mExecutor.executeNextBatch(nextBatchSize);
-                }
+                // We've just finished one batch, ask for more
+                int nextBatchSize = mConfig.getNumPromotedSources();
+                mCountAtWhichToExecuteNextBatch += nextBatchSize;
+                mExecutor.executeNextBatch(nextBatchSize);
             }
         }
     }
-
 }

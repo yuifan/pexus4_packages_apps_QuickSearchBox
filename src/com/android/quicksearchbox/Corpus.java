@@ -70,8 +70,6 @@ public interface Corpus extends SuggestionCursorProvider<CorpusResult> {
 
     Intent createVoiceSearchIntent(Bundle appData);
 
-    SuggestionData createSearchShortcut(String query);
-
     boolean isWebCorpus();
 
     /**
@@ -80,22 +78,18 @@ public interface Corpus extends SuggestionCursorProvider<CorpusResult> {
     Collection<Source> getSources();
 
     /**
-     * Checks if this corpus is enabled.
-     */
-    boolean isCorpusEnabled();
-
-    /**
      * Checks if this corpus is enabled by default.
      */
     boolean isCorpusDefaultEnabled();
+
+    /**
+     * Whether this corpus should be included in the blended All mode.
+     */
+    boolean includeInAll();
 
     /**
      * Checks if this corpus should be hidden from the corpus selector.
      */
     boolean isCorpusHidden();
 
-    /**
-     * Checks if this corpus is location aware.
-     */
-    boolean isLocationAware();
 }

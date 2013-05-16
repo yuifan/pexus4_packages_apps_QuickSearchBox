@@ -16,6 +16,8 @@
 
 package com.android.quicksearchbox;
 
+import com.android.quicksearchbox.util.Consumer;
+
 import java.util.Collection;
 import java.util.Map;
 
@@ -25,12 +27,30 @@ import java.util.Map;
  */
 public class MockShortcutRepository implements ShortcutRepository {
 
+    private Map<String, Integer> mCorpusScores;
+
+    public void setCorpusScores(Map<String, Integer> corpusScores) {
+        mCorpusScores = corpusScores;
+    }
+
     public void clearHistory() {
+    }
+
+    public void removeFromHistory(SuggestionCursor suggestions, int position) {
     }
 
     public void close() {
     }
 
+    public void getShortcutsForQuery(String query, Collection<Corpus> corporaToQuery,
+            boolean allowWebSearchShortcuts, Consumer<ShortcutCursor> consumer) {
+        ShortcutCursor cursor = getShortcutsForQuery(query, corporaToQuery);
+        consumer.consume(cursor);
+    }
+
+    /**
+     * Synchronous version for use in tests that just need a ShortcutCursor.
+     */
     public ShortcutCursor getShortcutsForQuery(String query, Collection<Corpus> corporaToQuery) {
         // TODO: should look at corporaToQuery
         ShortcutCursor cursor = new ShortcutCursor(query, null, null, null);
@@ -42,12 +62,12 @@ public class MockShortcutRepository implements ShortcutRepository {
     public void updateShortcut(Source source, String shortcutId, SuggestionCursor refreshed) {
     }
 
-    public Map<String, Integer> getCorpusScores() {
-        return null;
+    public void getCorpusScores(Consumer<Map<String, Integer>> consumer) {
+        consumer.consume(mCorpusScores);
     }
 
-    public boolean hasHistory() {
-        return false;
+    public void hasHistory(Consumer<Boolean> consumer) {
+        consumer.consume(false);
     }
 
     public void reportClick(SuggestionCursor suggestions, int position) {

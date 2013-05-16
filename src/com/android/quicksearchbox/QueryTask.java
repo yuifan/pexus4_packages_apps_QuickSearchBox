@@ -17,15 +17,20 @@
 package com.android.quicksearchbox;
 
 import com.android.quicksearchbox.util.Consumer;
+import com.android.quicksearchbox.util.Consumers;
 import com.android.quicksearchbox.util.NamedTask;
 import com.android.quicksearchbox.util.NamedTaskExecutor;
 
 import android.os.Handler;
+import android.util.Log;
 
 /**
  * A task that gets suggestions from a corpus.
  */
 public class QueryTask<C extends SuggestionCursor> implements NamedTask {
+    private static final String TAG = "QSB.QueryTask";
+    private static final boolean DBG = false;
+
     private final String mQuery;
     private final int mQueryLimit;
     private final SuggestionCursorProvider<C> mProvider;
@@ -60,18 +65,8 @@ public class QueryTask<C extends SuggestionCursor> implements NamedTask {
 
     public void run() {
         final C cursor = mProvider.getSuggestions(mQuery, mQueryLimit, mTheOnlyOne);
-        if (mHandler == null) {
-            mConsumer.consume(cursor);
-        } else {
-            mHandler.post(new Runnable() {
-                public void run() {
-                    boolean accepted = mConsumer.consume(cursor);
-                    if (!accepted) {
-                        cursor.close();
-                    }
-                }
-            });
-        }
+        if (DBG) Log.d(TAG, "Suggestions from " + mProvider + " = " + cursor);
+        Consumers.consumeCloseableAsync(mHandler, mConsumer, cursor);
     }
 
     @Override
@@ -86,10 +81,19 @@ public class QueryTask<C extends SuggestionCursor> implements NamedTask {
             Consumer<C> consumer, boolean onlyOneProvider) {
 
         for (SuggestionCursorProvider<C> provider : providers) {
-            QueryTask<C> task = new QueryTask<C>(query, maxResultsPerProvider, provider, handler,
-                    consumer, onlyOneProvider);
-            executor.execute(task);
+            QueryTask.startQuery(query, maxResultsPerProvider, provider,
+                    executor, handler, consumer, onlyOneProvider);
         }
     }
 
+    public static <C extends SuggestionCursor> void startQuery(String query,
+            int maxResultsPerProvider,
+            SuggestionCursorProvider<C> provider,
+            NamedTaskExecutor executor, Handler handler,
+            Consumer<C> consumer, boolean onlyOneProvider) {
+
+        QueryTask<C> task = new QueryTask<C>(query, maxResultsPerProvider, provider, handler,
+                consumer, onlyOneProvider);
+        executor.execute(task);
+    }
 }

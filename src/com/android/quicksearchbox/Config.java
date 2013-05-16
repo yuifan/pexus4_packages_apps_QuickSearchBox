@@ -18,7 +18,7 @@ package com.android.quicksearchbox;
 
 import android.app.AlarmManager;
 import android.content.Context;
-import android.content.res.Resources;
+import android.net.Uri;
 import android.os.Process;
 import android.util.Log;
 
@@ -34,17 +34,14 @@ import java.util.HashSet;
 public class Config {
 
     private static final String TAG = "QSB.Config";
+    private static final boolean DBG = false;
 
     protected static final long SECOND_MILLIS = 1000L;
     protected static final long MINUTE_MILLIS = 60L * SECOND_MILLIS;
     protected static final long DAY_MILLIS = 86400000L;
 
-    private static final int NUM_SUGGESTIONS_ABOVE_KEYBOARD = 4;
     private static final int NUM_PROMOTED_SOURCES = 3;
-    private static final int MAX_PROMOTED_SUGGESTIONS = 8;
     private static final int MAX_RESULTS_PER_SOURCE = 50;
-    private static final int MAX_SHORTCUTS_PER_WEB_SOURCE = MAX_PROMOTED_SUGGESTIONS;
-    private static final int MAX_SHORTCUTS_PER_NON_WEB_SOURCE = 2;
     private static final long SOURCE_TIMEOUT_MILLIS = 10000;
 
     private static final int QUERY_THREAD_PRIORITY =
@@ -72,9 +69,15 @@ public class Config {
 
     private static final long VOICE_SEARCH_HINT_VISIBLE_PERIOD = 6L * MINUTE_MILLIS;
 
+    private static final int HTTP_CONNECT_TIMEOUT_MILLIS = 4000;
+    private static final int HTTP_READ_TIMEOUT_MILLIS = 4000;
+
+    private static final String USER_AGENT = "Android/1.0";
+
     private final Context mContext;
     private HashSet<String> mDefaultCorpora;
     private HashSet<String> mHiddenCorpora;
+    private HashSet<String> mDefaultCorporaSuggestUris;
 
     /**
      * Creates a new config that uses hard-coded default values.
@@ -97,26 +100,42 @@ public class Config {
 
     private HashSet<String> loadResourceStringSet(int res) {
         HashSet<String> defaultCorpora = new HashSet<String>();
-        try {
-            String[] corpora = mContext.getResources().getStringArray(res);
-            for (String corpus : corpora) {
-                defaultCorpora.add(corpus);
-            }
-            return defaultCorpora;
-        } catch (Resources.NotFoundException ex) {
-            Log.e(TAG, "Could not load resource string set", ex);
-            return defaultCorpora;
+        String[] corpora = mContext.getResources().getStringArray(res);
+        for (String corpus : corpora) {
+            if (DBG) Log.d(TAG, "Default corpus: " + corpus);
+            defaultCorpora.add(corpus);
         }
+        return defaultCorpora;
     }
 
     /**
      * Checks if we trust the given source not to be spammy.
      */
-    public synchronized boolean isCorpusEnabledByDefault(String corpusName) {
+    public synchronized boolean isCorpusEnabledByDefault(Corpus corpus) {
+        if (DBG) Log.d(TAG, "isCorpusEnabledByDefault(" + corpus.getName() + ")");
         if (mDefaultCorpora == null) {
             mDefaultCorpora = loadResourceStringSet(R.array.default_corpora);
         }
-        return mDefaultCorpora.contains(corpusName);
+        if (mDefaultCorpora.contains(corpus.getName())) {
+            if (DBG) Log.d(TAG, "Corpus " + corpus.getName() + " IS default");
+            return true;
+        }
+
+        if (mDefaultCorporaSuggestUris == null) {
+            mDefaultCorporaSuggestUris = loadResourceStringSet(
+                    R.array.default_corpora_suggest_uris);
+        }
+
+        for (Source s : corpus.getSources()) {
+            String uri = s.getSuggestUri();
+            if (DBG) Log.d(TAG, "Suggest URI for " + corpus.getName() + ": " + uri);
+            if (mDefaultCorporaSuggestUris.contains(uri)) {
+                if (DBG) Log.d(TAG, "Corpus " + corpus.getName() + " IS default");
+                return true;
+            }
+        }
+        if (DBG) Log.d(TAG, "Corpus " + corpus.getName() + " is NOT default");
+        return false;
     }
 
     /**
@@ -140,20 +159,19 @@ public class Config {
      * The number of suggestions visible above the onscreen keyboard.
      */
     public int getNumSuggestionsAboveKeyboard() {
-        try {
-            // Get the list of default corpora from a resource, which allows vendor overlays.
-            return mContext.getResources().getInteger(R.integer.num_suggestions_above_keyboard);
-        } catch (Resources.NotFoundException ex) {
-            Log.e(TAG, "Could not load num_suggestions_above_keyboard", ex);
-            return NUM_SUGGESTIONS_ABOVE_KEYBOARD;
-        }
+        // Get the list of default corpora from a resource, which allows vendor overlays.
+        return mContext.getResources().getInteger(R.integer.num_suggestions_above_keyboard);
     }
 
     /**
      * The maximum number of suggestions to promote.
      */
     public int getMaxPromotedSuggestions() {
-        return MAX_PROMOTED_SUGGESTIONS;
+        return mContext.getResources().getInteger(R.integer.max_promoted_suggestions);
+    }
+
+    public int getMaxPromotedResults() {
+        return mContext.getResources().getInteger(R.integer.max_promoted_results);
     }
 
     /**
@@ -167,14 +185,21 @@ public class Config {
      * The maximum number of shortcuts to show for the web source in All mode.
      */
     public int getMaxShortcutsPerWebSource() {
-        return MAX_SHORTCUTS_PER_WEB_SOURCE;
+        return mContext.getResources().getInteger(R.integer.max_shortcuts_per_web_source);
     }
 
     /**
      * The maximum number of shortcuts to show for each non-web source in All mode.
      */
     public int getMaxShortcutsPerNonWebSource() {
-        return MAX_SHORTCUTS_PER_NON_WEB_SOURCE;
+        return mContext.getResources().getInteger(R.integer.max_shortcuts_per_non_web_source);
+    }
+
+    /**
+     * Gets the maximum number of shortcuts that will be shown from the given source.
+     */
+    public int getMaxShortcuts(String sourceName) {
+        return getMaxShortcutsPerNonWebSource();
     }
 
     /**
@@ -285,5 +310,39 @@ public class Config {
      */
     public long getVoiceSearchHintChangePeriod() {
         return VOICE_SEARCH_HINT_CHANGE_PERIOD;
+    }
+
+    public boolean showSuggestionsForZeroQuery() {
+        // Get the list of default corpora from a resource, which allows vendor overlays.
+        return mContext.getResources().getBoolean(R.bool.show_zero_query_suggestions);
+    }
+
+    public boolean showShortcutsForZeroQuery() {
+        // Get the list of default corpora from a resource, which allows vendor overlays.
+        return mContext.getResources().getBoolean(R.bool.show_zero_query_shortcuts);
+    }
+
+    public boolean showScrollingSuggestions() {
+        return mContext.getResources().getBoolean(R.bool.show_scrolling_suggestions);
+    }
+
+    public boolean showScrollingResults() {
+        return mContext.getResources().getBoolean(R.bool.show_scrolling_results);
+    }
+
+    public Uri getHelpUrl(String activity) {
+        return null;
+    }
+
+    public int getHttpConnectTimeout() {
+        return HTTP_CONNECT_TIMEOUT_MILLIS;
+    }
+
+    public int getHttpReadTimeout() {
+        return HTTP_READ_TIMEOUT_MILLIS;
+    }
+
+    public String getUserAgent() {
+        return USER_AGENT;
     }
 }

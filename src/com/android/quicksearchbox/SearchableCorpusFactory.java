@@ -37,12 +37,15 @@ public class SearchableCorpusFactory implements CorpusFactory {
 
     private final Config mConfig;
 
+    private final SearchSettings mSettings;
+
     private final Factory<Executor> mWebCorpusExecutorFactory;
 
-    public SearchableCorpusFactory(Context context, Config config,
+    public SearchableCorpusFactory(Context context, Config config, SearchSettings settings,
             Factory<Executor> webCorpusExecutorFactory) {
         mContext = context;
         mConfig = config;
+        mSettings = settings;
         mWebCorpusExecutorFactory = webCorpusExecutorFactory;
     }
 
@@ -103,7 +106,7 @@ public class SearchableCorpusFactory implements CorpusFactory {
     }
 
     protected Corpus createWebCorpus(Sources sources) {
-        Source webSource = sources.getWebSearchSource();
+        Source webSource = getWebSource(sources);
         if (webSource != null && !webSource.canRead()) {
             Log.w(TAG, "Can't read web source " + webSource.getName());
             webSource = null;
@@ -114,7 +117,7 @@ public class SearchableCorpusFactory implements CorpusFactory {
             browserSource = null;
         }
         Executor executor = createWebCorpusExecutor();
-        return new WebCorpus(mContext, mConfig, executor, webSource, browserSource);
+        return new WebCorpus(mContext, mConfig, mSettings, executor, webSource, browserSource);
     }
 
     protected Corpus createAppsCorpus(Sources sources) {
@@ -125,6 +128,10 @@ public class SearchableCorpusFactory implements CorpusFactory {
     protected Corpus createSingleSourceCorpus(Source source) {
         if (!source.canRead()) return null;
         return new SingleSourceCorpus(mContext, mConfig, source);
+    }
+
+    protected Source getWebSource(Sources sources) {
+        return sources.getWebSearchSource();
     }
 
     protected Source getBrowserSource(Sources sources) {

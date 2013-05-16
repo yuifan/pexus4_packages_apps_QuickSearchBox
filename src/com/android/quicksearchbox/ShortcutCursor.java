@@ -27,7 +27,7 @@ import java.util.HashSet;
  * A SuggestionCursor that allows shortcuts to be updated by overlaying
  * with results from another cursor.
  */
-class ShortcutCursor extends ListSuggestionCursor {
+public class ShortcutCursor extends ListSuggestionCursor {
 
     private static final boolean DBG = false;
     private static final String TAG = "QSB.ShortcutCursor";
@@ -38,11 +38,11 @@ class ShortcutCursor extends ListSuggestionCursor {
     // they can be closed when ShortcutCursor is closed.
     private final HashSet<SuggestionCursor> mRefreshed;
 
+    private boolean mClosed = false;
+
     private final ShortcutRefresher mRefresher;
     private final ShortcutRepository mShortcutRepo;
     private final Handler mUiThread;
-
-    private boolean mClosed;
 
     private ShortcutCursor(String query, SuggestionCursor shortcuts, Handler uiThread,
             ShortcutRefresher refresher, ShortcutRepository repository) {
@@ -55,25 +55,36 @@ class ShortcutCursor extends ListSuggestionCursor {
     }
 
     @VisibleForTesting
-    public ShortcutCursor(String query, Handler uiThread,
+    ShortcutCursor(String query, Handler uiThread,
             ShortcutRefresher refresher, ShortcutRepository repository) {
         this(query, null, uiThread, refresher, repository);
     }
 
-    public ShortcutCursor(SuggestionCursor suggestions, Handler uiThread,
-            ShortcutRefresher refresher, ShortcutRepository repository) {
+    @VisibleForTesting
+    ShortcutCursor(SuggestionCursor suggestions) {
+        this(suggestions, true, null, null, null);
+    }
+
+    public ShortcutCursor(SuggestionCursor suggestions, boolean allowWebSearchShortcuts,
+            Handler uiThread, ShortcutRefresher refresher, ShortcutRepository repository) {
         this(suggestions.getUserQuery(), suggestions, uiThread, refresher, repository);
-        if (suggestions == null) return;
         int count = suggestions.getCount();
         if (DBG) Log.d(TAG, "Total shortcuts: " + count);
         for (int i = 0; i < count; i++) {
             suggestions.moveTo(i);
-            if (suggestions.getSuggestionSource() != null) {
+            if (suggestions.getSuggestionSource() != null
+                    && (allowWebSearchShortcuts || !suggestions.isWebSearchSuggestion())) {
                 add(new SuggestionPosition(suggestions));
             } else {
                 if (DBG) Log.d(TAG, "Skipping shortcut " + i);
             }
         }
+    }
+
+    @Override
+    public boolean isSuggestionShortcut() {
+        // Needed to make refreshed shortcuts be treated as shortcuts
+        return true;
     }
 
     /**
@@ -132,15 +143,14 @@ class ShortcutCursor extends ListSuggestionCursor {
     public void close() {
         if (DBG) Log.d(TAG, "close()");
         if (mClosed) {
-            throw new IllegalStateException("Double close()");
+            throw new IllegalStateException("double close");
         }
-        super.close();
         mClosed = true;
         if (mShortcuts != null) {
             mShortcuts.close();
         }
         for (SuggestionCursor cursor : mRefreshed) {
-             cursor.close();
+            cursor.close();
         }
         super.close();
     }

@@ -16,6 +16,8 @@
 
 package com.android.quicksearchbox;
 
+import com.google.common.annotations.VisibleForTesting;
+
 import android.app.SearchManager;
 import android.content.Intent;
 import android.net.Uri;
@@ -30,7 +32,6 @@ public class SuggestionUtils {
     }
 
     public static Intent getSuggestionIntent(SuggestionCursor suggestion, Bundle appSearchData) {
-        Source source = suggestion.getSuggestionSource();
         String action = suggestion.getSuggestionIntentAction();
 
         String data = suggestion.getSuggestionIntentDataString();
@@ -58,8 +59,64 @@ public class SuggestionUtils {
             intent.putExtra(SearchManager.APP_DATA, appSearchData);
         }
 
-        intent.setComponent(source.getIntentComponent());
+        intent.setComponent(suggestion.getSuggestionIntentComponent());
         return intent;
+    }
+
+    /**
+     * Gets a unique key that identifies a suggestion. This is used to avoid
+     * duplicate suggestions.
+     */
+    public static String getSuggestionKey(Suggestion suggestion) {
+        String action = makeKeyComponent(suggestion.getSuggestionIntentAction());
+        String data = makeKeyComponent(normalizeUrl(suggestion.getSuggestionIntentDataString()));
+        String query = makeKeyComponent(normalizeUrl(suggestion.getSuggestionQuery()));
+        // calculating accurate size of string builder avoids an allocation vs starting with
+        // the default size and having to expand.
+        int size = action.length() + 2 + data.length() + query.length();
+        return new StringBuilder(size)
+                .append(action)
+                .append('#')
+                .append(data)
+                .append('#')
+                .append(query)
+                .toString();
+    }
+
+    private static String makeKeyComponent(String str) {
+        return str == null ? "" : str;
+    }
+
+    private static final String SCHEME_SEPARATOR = "://";
+    private static final String DEFAULT_SCHEME = "http";
+
+    /**
+     * Simple url normalization that adds http:// if no scheme exists, and
+     * strips empty paths, e.g.,
+     * www.google.com/ -> http://www.google.com.  Used to prevent obvious
+     * duplication of nav suggestions, bookmarks and urls entered by the user.
+     */
+    @VisibleForTesting
+    static String normalizeUrl(String url) {
+        String normalized;
+        if (url != null) {
+            int start;
+            int schemePos = url.indexOf(SCHEME_SEPARATOR);
+            if (schemePos == -1) {
+                // no scheme - add the default
+                normalized = DEFAULT_SCHEME + SCHEME_SEPARATOR + url;
+                start = DEFAULT_SCHEME.length() + SCHEME_SEPARATOR.length();
+            } else {
+                normalized = url;
+                start = schemePos + SCHEME_SEPARATOR.length();
+            }
+            int end = normalized.length();
+            if (normalized.indexOf('/', start) == end - 1) {
+                end--;
+            }
+            return normalized.substring(0, end);
+        }
+        return url;
     }
 
 }

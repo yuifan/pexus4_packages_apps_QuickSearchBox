@@ -57,22 +57,22 @@ public class EventLogLogger implements Logger {
         return mConfig;
     }
 
-    public void logStart(int latency, String intentSource, Corpus corpus,
+    public void logStart(int onCreateLatency, int latency, String intentSource, Corpus corpus,
             List<Corpus> orderedCorpora) {
         // TODO: Add more info to startMethod
         String startMethod = intentSource;
         String currentCorpus = getCorpusLogName(corpus);
         String enabledCorpora = getCorpusLogNames(orderedCorpora);
         EventLogTags.writeQsbStart(mPackageName, getVersionCode(), startMethod,
-                latency, currentCorpus, enabledCorpora);
+                latency, currentCorpus, enabledCorpora, onCreateLatency);
     }
 
-    public void logSuggestionClick(int position, SuggestionCursor suggestionCursor,
+    public void logSuggestionClick(long id, SuggestionCursor suggestionCursor,
             Collection<Corpus> queriedCorpora, int clickType) {
         String suggestions = getSuggestions(suggestionCursor);
         String corpora = getCorpusLogNames(queriedCorpora);
         int numChars = suggestionCursor.getUserQuery().length();
-        EventLogTags.writeQsbClick(position, suggestions, corpora, numChars,
+        EventLogTags.writeQsbClick(id, suggestions, corpora, numChars,
                 clickType);
     }
 
@@ -125,6 +125,7 @@ public class EventLogLogger implements Logger {
     }
 
     private String getCorpusLogNames(Collection<Corpus> corpora) {
+        if (corpora == null) return "";
         StringBuilder sb = new StringBuilder();
         for (Corpus corpus : corpora) {
             if (sb.length() > 0) sb.append(LIST_SEPARATOR);

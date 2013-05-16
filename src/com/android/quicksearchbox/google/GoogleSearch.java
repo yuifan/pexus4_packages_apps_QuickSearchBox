@@ -17,11 +17,15 @@
 package com.android.quicksearchbox.google;
 
 import com.android.common.Search;
-import com.android.quicksearchbox.R;
+import com.android.quicksearchbox.QsbApplication;
 
 import android.app.Activity;
+import android.app.PendingIntent;
 import android.app.SearchManager;
+import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
+import android.location.Location;
 import android.net.Uri;
 import android.os.Bundle;
 import android.provider.Browser;
@@ -38,9 +42,11 @@ import java.util.Locale;
  */
 public class GoogleSearch extends Activity {
     private static final String TAG = "GoogleSearch";
+    private static final boolean DBG = false;
 
-    // The template URL we should use to format google search requests.
-    private String googleSearchUrlBase = null;
+    // Used to figure out which domain to base search requests
+    // on.
+    private SearchBaseUrlHelper mSearchDomainHelper;
 
     // "source" parameter for Google search requests from unknown sources (e.g. apps). This will get
     // prefixed with the string 'android-' before being sent on the wire.
@@ -51,44 +57,63 @@ public class GoogleSearch extends Activity {
         super.onCreate(savedInstanceState);
         Intent intent = getIntent();
         String action = intent != null ? intent.getAction() : null;
+
+        // This should probably be moved so as to
+        // send out the request to /checksearchdomain as early as possible.
+        mSearchDomainHelper = QsbApplication.get(this).getSearchBaseUrlHelper();
+
         if (Intent.ACTION_WEB_SEARCH.equals(action) || Intent.ACTION_SEARCH.equals(action)) {
             handleWebSearchIntent(intent);
         }
+
         finish();
     }
 
     /**
-     * NOTE: This function is similar to the one found in
-     * com.google.android.providers.enhancedgooglesearch.Launcher. If you are changing this
-     * make sure you change both.
+     * Construct the language code (hl= paramater) for the given locale.
      */
+    public static String getLanguage(Locale locale) {
+        String language = locale.getLanguage();
+        StringBuilder hl = new StringBuilder(language);
+        String country = locale.getCountry();
+
+        if (!TextUtils.isEmpty(country) && useLangCountryHl(language, country)) {
+            hl.append('-');
+            hl.append(country);
+        }
+
+        if (DBG) Log.d(TAG, "language " + language + ", country " + country + " -> hl=" + hl);
+        return hl.toString();
+    }
+
+    // TODO: This is a workaround for bug 3232296. When that is fixed, this method can be removed.
+    private static boolean useLangCountryHl(String language, String country) {
+        // lang-country is currently only supported for a small number of locales
+        if ("en".equals(language)) {
+            return "GB".equals(country);
+        } else if ("zh".equals(language)) {
+            return "CN".equals(country) || "TW".equals(country);
+        } else if ("pt".equals(language)) {
+            return "BR".equals(country) || "PT".equals(country);
+        } else {
+            return false;
+        }
+    }
+
     private void handleWebSearchIntent(Intent intent) {
+        Intent launchUriIntent = createLaunchUriIntentFromSearchIntent(intent);
+        PendingIntent pending =
+            intent.getParcelableExtra(SearchManager.EXTRA_WEB_SEARCH_PENDINGINTENT);
+        if (pending == null || !launchPendingIntent(pending, launchUriIntent)) {
+            launchIntent(launchUriIntent);
+        }
+    }
+
+    private Intent createLaunchUriIntentFromSearchIntent(Intent intent) {
         String query = intent.getStringExtra(SearchManager.QUERY);
         if (TextUtils.isEmpty(query)) {
             Log.w(TAG, "Got search intent with no query.");
-            return;
-        }
-
-        if (googleSearchUrlBase == null) {
-            Locale l = Locale.getDefault();
-            String language = l.getLanguage();
-            String country = l.getCountry().toLowerCase();
-            // Chinese and Portuguese have two langauge variants.
-            if ("zh".equals(language)) {
-                if ("cn".equals(country)) {
-                    language = "zh-CN";
-                } else if ("tw".equals(country)) {
-                    language = "zh-TW";
-                }
-            } else if ("pt".equals(language)) {
-                if ("br".equals(country)) {
-                    language = "pt-BR";
-                } else if ("pt".equals(country)) {
-                    language = "pt-PT";
-                }
-            }
-            googleSearchUrlBase = getResources().getString(
-                    R.string.google_search_base, language, country);
+            return null;
         }
 
         // If the caller specified a 'source' url parameter, use that and if not use default.
@@ -108,15 +133,36 @@ public class GoogleSearch extends Activity {
         }
 
         try {
-            String searchUri = googleSearchUrlBase
+            String searchUri = mSearchDomainHelper.getSearchBaseUrl()
                     + "&source=android-" + source
                     + "&q=" + URLEncoder.encode(query, "UTF-8");
             Intent launchUriIntent = new Intent(Intent.ACTION_VIEW, Uri.parse(searchUri));
             launchUriIntent.putExtra(Browser.EXTRA_APPLICATION_ID, applicationId);
             launchUriIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(launchUriIntent);
+            return launchUriIntent;
         } catch (UnsupportedEncodingException e) {
             Log.w(TAG, "Error", e);
+            return null;
+        }
+
+    }
+
+    private void launchIntent(Intent intent) {
+        try {
+            Log.i(TAG, "Launching intent: " + intent.toUri(0));
+            startActivity(intent);
+        } catch (ActivityNotFoundException ex) {
+            Log.w(TAG, "No activity found to handle: " + intent);
+        }
+    }
+
+    private boolean launchPendingIntent(PendingIntent pending, Intent fillIn) {
+        try {
+            pending.send(this, Activity.RESULT_OK, fillIn);
+            return true;
+        } catch (PendingIntent.CanceledException ex) {
+            Log.i(TAG, "Pending intent cancelled: " + pending);
+            return false;
         }
     }
 
